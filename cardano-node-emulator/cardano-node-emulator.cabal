@@ -99,6 +99,7 @@ library
     , quickcheck-contractmodel
     , quickcheck-dynamic
     , quickcheck-threatmodel
+    , serialise
     , sop-core
     , tasty
     , tasty-hunit
@@ -115,13 +116,22 @@ test-suite cardano-node-emulator-test
   other-modules:
     Cardano.Node.Emulator.GeneratorsSpec
     Cardano.Node.Emulator.MTLSpec
-    Plutus.CIP1694.Scripts
-    Plutus.CIP1694.Test
+    Plutus.Examples.AccountSim
+    Plutus.Examples.AccountSimAPI
+    Plutus.Examples.AccountSimSpec
+    Plutus.Examples.DEx
+    Plutus.Examples.DExAPI
+    Plutus.Examples.DExSpec
     Plutus.Examples.Escrow
     Plutus.Examples.EscrowSpec
     Plutus.Examples.Game
     Plutus.Examples.GameSpec
+    Plutus.Examples.MultiSig
+    Plutus.Examples.MultiSigAPI
+    Plutus.Examples.MultiSigSpec
 
+  --  Plutus.CIP1694.Scripts
+  --  Plutus.CIP1694.Test
   -- The limitation of plutus-tx-plugin
   if (impl(ghc <9.6) || impl(ghc >=9.7))
     buildable: False
@@ -138,10 +148,11 @@ test-suite cardano-node-emulator-test
   -- Other IOG dependencies
   --------------------------
   build-depends:
-    , cardano-api:{cardano-api, gen, internal}  ^>=8.42
-    , plutus-ledger-api                         >=1.0.0
-    , plutus-tx                                 >=1.0.0
-    , plutus-tx-plugin                          >=1.0.0
+    , cardano-api:{cardano-api, gen, internal}                   ^>=8.42
+    , plutus-core:{plutus-core, plutus-core-testlib, plutus-ir}  ^>=1.21.0
+    , plutus-ledger-api                                          >=1.0.0
+    , plutus-tx-plugin                                           >=1.0.0
+    , plutus-tx:{plutus-tx, plutus-tx-testlib}                   >=1.21.0
 
   ------------------------
   -- Non-IOG dependencies
@@ -152,12 +163,15 @@ test-suite cardano-node-emulator-test
     , bytestring
     , containers
     , data-default
+    , flat
     , hedgehog
     , lens
     , mtl
+    , prettyprinter
     , QuickCheck
     , quickcheck-contractmodel
     , quickcheck-dynamic
+    , serialise
     , tasty
     , tasty-golden
     , tasty-hedgehog
