@@ -47,6 +47,7 @@ module Plutus.Examples.MultiSig (
   -- * testing
   minValue,
   x2MinValue,
+  writeUplc,
 ) where
 
 -- writeSMValidator,
@@ -571,14 +572,13 @@ modelParams' =
     , maxWait = 2000000000
     }
 
-{-
-ccode :: PlutusTx.CompiledCode (Params -> State -> Input -> ScriptContext -> Bool)
-ccode = $$(PlutusTx.compile [||mkValidator||])
+ccode :: PlutusTx.CompiledCode (Params -> Label -> Input -> ScriptContext -> Bool)
+ccode = $$(PlutusTx.compile [||agdaValidator||])
 
-ccodePar :: PlutusTx.CompiledCode (State -> Input -> ScriptContext -> Bool)
+ccodePar :: PlutusTx.CompiledCode (Label -> Input -> ScriptContext -> Bool)
 ccodePar =
   $$( PlutusTx.compile
-        [||\params' -> mkValidator params'||]
+        [||\params' -> agdaValidator params'||]
     )
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 modelParams'
 
@@ -622,7 +622,7 @@ writePir :: IO ()
 writePir = writeFile "pir.txt" (show (printPir ccode))
 
 writeUplc :: IO ()
-writeUplc = writeFile "uplc.txt" (show (getPlcNoAnn ccode)) -}
+writeUplc = writeFile "uplc.txt" (show (getPlcNoAnn ccode {--}))
 
 {-
 printUplc :: PlutusTx.CompiledCode a -> Doc b
