@@ -49,6 +49,7 @@ module Plutus.Examples.AccountSim (
   covIdx,
 
   -- * testing
+  writeUplc,
 ) where
 
 -- writeSMValidator,
@@ -586,3 +587,23 @@ checkValue addr tn ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfoO
 
 covIdx = getCovIdx $$(PlutusTx.compile [||agdaValidator||])
 covIdx :: CoverageIndex
+ccode :: PlutusTx.CompiledCode (Label -> Input -> ScriptContext -> Bool)
+ccode = $$(PlutusTx.compile [||agdaValidator||])
+
+test :: SerialisedScript
+test = serialiseCompiledCode ccode
+
+serialisedNP :: C.PlutusScript C.PlutusScriptV3
+serialisedNP = C.PlutusScriptSerialised test
+
+writeCcode :: IO ()
+writeCcode = void $ C.writeFileTextEnvelope "ccode.plutus" Nothing serialisedNP
+
+printPir :: PlutusTx.CompiledCode a -> Doc b
+printPir c = (prettyPirReadable (view progTerm (fromJust (getPirNoAnn c))))
+
+writePir :: IO ()
+writePir = writeFile "pir.txt" (show (printPir ccode))
+
+writeUplc :: IO ()
+writeUplc = writeFile "uplc.txt" (show (getPlcNoAnn ccode {--}))

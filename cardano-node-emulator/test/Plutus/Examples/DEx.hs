@@ -46,6 +46,7 @@ module Plutus.Examples.DEx (
   lovelaceValue,
 
   -- * testing
+  writeUplc,
 ) where
 
 -- writeSMValidator,
@@ -618,3 +619,24 @@ checkPayment par amt l ctx = case filter
 checkRational :: Rational -> Bool
 checkRational r = (numerator r >= 0) && (denominator r > 0)
 -}
+
+ccode :: PlutusTx.CompiledCode (Params -> Label -> Input -> ScriptContext -> Bool)
+ccode = $$(PlutusTx.compile [||agdaValidator||])
+
+test :: SerialisedScript
+test = serialiseCompiledCode ccode
+
+serialisedNP :: C.PlutusScript C.PlutusScriptV3
+serialisedNP = C.PlutusScriptSerialised test
+
+writeCcode :: IO ()
+writeCcode = void $ C.writeFileTextEnvelope "ccode.plutus" Nothing serialisedNP
+
+printPir :: PlutusTx.CompiledCode a -> Doc b
+printPir c = (prettyPirReadable (view progTerm (fromJust (getPirNoAnn c))))
+
+writePir :: IO ()
+writePir = writeFile "pir.txt" (show (printPir ccode))
+
+writeUplc :: IO ()
+writeUplc = writeFile "uplc.txt" (show (getPlcNoAnn ccode {--}))
