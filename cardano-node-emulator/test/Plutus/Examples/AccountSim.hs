@@ -16,13 +16,8 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
--- {-# OPTIONS_GHC -g -fplugin-opt PlutusTx.Plugin:coverage-all #-}
-
--- {-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:conservative-optimisation #-}
-
--- | A general-purpose escrow contract in Plutus
+-- | Simulating Accounts on UTxO using Plutus
 module Plutus.Examples.AccountSim (
-  -- $multisig
   AccountSim,
   Label (..),
   smTypedValidator,
@@ -48,44 +43,12 @@ module Plutus.Examples.AccountSim (
   -- * Coverage
   covIdx,
 
-  -- * testing
+  -- * Testing
   writeUplc,
 ) where
 
--- writeSMValidator,
--- test,
--- test2,
--- writeCcode,
--- writeCcodePar,
--- ccode,
--- ccodePar,
--- goldenPirReadable,
--- runTestNested,
--- runTestNestedIn,
--- printPir,
--- toUPlc,
--- getPlcNoAnn,
--- writePir,
--- writeUplc,
-
-import Control.Lens (makeClassyPrisms)
-import Control.Monad (void)
-import Control.Monad.Except (catchError, throwError)
-import Control.Monad.RWS.Class (asks)
-import Data.Map qualified as Map
-
 import Cardano.Api qualified as C
 import Cardano.Api.Shelley qualified as C
-import PlutusTx (ToData)
-import PlutusTx qualified
-import PlutusTx.Code (getCovIdx)
-import PlutusTx.Coverage (CoverageIndex)
-
--- import PlutusTx.Prelude ()
--- import PlutusTx.Prelude qualified as PlutusTx
-import PlutusTx.Prelude
-import Prelude (IO, Show (..), String, writeFile)
-
 import Cardano.Node.Emulator qualified as E
 import Cardano.Node.Emulator.Internal.Node (
   SlotConfig,
@@ -93,13 +56,30 @@ import Cardano.Node.Emulator.Internal.Node (
   posixTimeRangeToContainedSlotRange,
  )
 import Cardano.Node.Emulator.Test (testnet)
+import Codec.Serialise (serialise)
+import Control.Exception
+import Control.Lens (Getting, makeClassyPrisms, traverseOf, view)
+import Control.Monad (void)
+import Control.Monad.Except (ExceptT, catchError, liftEither, runExceptT, throwError, withExceptT)
+import Control.Monad.RWS.Class (asks)
+import Data.ByteString.Lazy qualified as LBS
+import Data.ByteString.Short qualified as SBS
+import Data.Map qualified as Map
 import Data.Maybe (fromJust)
-import Ledger (POSIXTime, PaymentPubKeyHash (unPaymentPubKeyHash), TxId, getCardanoTxId)
+import Flat (Flat)
+import Ledger (
+  POSIXTime,
+  PaymentPubKeyHash (unPaymentPubKeyHash),
+  TxId,
+  getCardanoTxId,
+  minAdaTxOutEstimated,
+ )
 import Ledger qualified
 import Ledger.Address (toWitness)
 import Ledger.Tx.CardanoAPI qualified as C
 import Ledger.Typed.Scripts (validatorCardanoAddress)
 import Ledger.Typed.Scripts qualified as Scripts
+import Plutus.Script.Utils.Ada qualified as Ada
 import Plutus.Script.Utils.Scripts (ValidatorHash, datumHash)
 import Plutus.Script.Utils.V3.Contexts (
   ScriptContext (ScriptContext, scriptContextTxInfo),
@@ -110,76 +90,43 @@ import Plutus.Script.Utils.V3.Contexts (
  )
 import Plutus.Script.Utils.V3.Scripts qualified as V3
 import Plutus.Script.Utils.V3.Typed.Scripts qualified as V3
-import Plutus.Script.Utils.Value -- (Value, geq, lt)
-import PlutusLedgerApi.V1.Interval qualified as Interval
-
-import PlutusLedgerApi.V1.Address
-import PlutusLedgerApi.V1.Value qualified as V
-
-import PlutusLedgerApi.V2.Tx hiding (TxId) -- (OutputDatum (OutputDatum))
-
-import PlutusLedgerApi.V3 hiding (TxId)
-import PlutusLedgerApi.V3.Contexts hiding (TxId)
-
-import Codec.Serialise (serialise)
-import Data.ByteString.Lazy qualified as LBS
-import Data.ByteString.Short qualified as SBS
-import Ledger (minAdaTxOutEstimated)
-import Plutus.Script.Utils.Ada qualified as Ada
-import PlutusCore.Version (plcVersion110)
-
-import PlutusCore.Test
-import PlutusTx.Test
-import Test.Tasty.Extras
-
-import Control.Exception
-import Control.Lens (Getting, traverseOf, view)
-import Control.Monad.Except (ExceptT, catchError, liftEither, runExceptT, throwError, withExceptT)
-import Flat (Flat)
+import Plutus.Script.Utils.Value
 import PlutusCore qualified as PLC
 import PlutusCore.Builtin qualified as PLC
 import PlutusCore.Pretty
 import PlutusCore.Pretty qualified as PLC
+import PlutusCore.Test
+import PlutusCore.Version (plcVersion110)
 import PlutusIR.Core.Instance.Pretty.Readable
 import PlutusIR.Core.Type (progTerm)
-import PlutusTx.Code (CompiledCode, CompiledCodeIn, getPir, getPirNoAnn, getPlcNoAnn, sizePlc)
+import PlutusLedgerApi.V1.Address
+import PlutusLedgerApi.V1.Interval qualified as Interval
+import PlutusLedgerApi.V1.Value qualified as V
+import PlutusLedgerApi.V2.Tx hiding (TxId)
+import PlutusLedgerApi.V3 hiding (TxId)
+import PlutusLedgerApi.V3.Contexts hiding (TxId)
+import PlutusTx (ToData)
+import PlutusTx qualified
+import PlutusTx.Code (
+  CompiledCode,
+  CompiledCodeIn,
+  getCovIdx,
+  getPir,
+  getPirNoAnn,
+  getPlcNoAnn,
+  sizePlc,
+ )
+import PlutusTx.Coverage (CoverageIndex)
+import PlutusTx.Prelude
+import PlutusTx.Test
 import Prettyprinter qualified
+import Test.Tasty.Extras
 import Test.Tasty.Extras (TestNested, nestedGoldenVsDoc, testNested)
 import UntypedPlutusCore qualified as UPLC
 import UntypedPlutusCore.Evaluation.Machine.Cek qualified as UPLC
+import Prelude (IO, Show (..), String, writeFile)
 
-{--}
-{-
-import PlutusLedgerApi.V2.Tx (OutputDatum (OutputDatum))
-import PlutusLedgerApi.V3 (Datum (Datum))
-import PlutusLedgerApi.V3.Contexts (valuePaidTo)
--}
-
-{-{-# INLINEABLE lEq #-}
-lEq :: Label -> Label -> Bool
-lEq Holding Holding = True
-lEq Holding (Collecting _ _ _ _) = False
-lEq (Collecting _ _ _ _) Holding = False
-lEq (Collecting v pkh d sigs) (Collecting v' pkh' d' sigs') = v == v' && pkh == pkh' && d == d' && sigs == sigs'
-
-instance Eq Label where
-  {-# INLINEABLE (==) #-}
-  b == c = lEq b c
-
-instance Eq State where
-  {-# INLINEABLE (==) #-}
-  b == c =
-    (label b == label c)
-      && (tToken b == tToken c)
-
-data Input
-  = Propose Value PaymentPubKeyHash Deadline
-  | Add PaymentPubKeyHash
-  | Pay
-  | Cancel
-  | Close
-  deriving (Show)
--}
+-- Custom types for the validator
 
 type AccMap = [(PubKeyHash, Value)]
 
@@ -194,14 +141,12 @@ data Input
   | Cleanup
   deriving (Show)
 
--- PlutusTx.unstableMakeIsData ''Label
--- PlutusTx.makeLift ''Label
+-- Necessary for template Haskell and compiling the validator
 PlutusTx.unstableMakeIsData ''Input
 PlutusTx.makeLift ''Input
 
--- PlutusTx.unstableMakeIsData ''State
--- PlutusTx.makeLift ''State
-
+-- Helper functions for manipulating Account maps.
+-- All functions that are part of the validator or minting policy must be inlineable for compilation
 {-# INLINEABLE insert #-}
 insert :: PubKeyHash -> Value -> AccMap -> AccMap
 insert pkh val [] = [(pkh, val)]
@@ -220,13 +165,9 @@ lookup pkh [] = Nothing
 lookup pkh ((x, y) : xs) =
   if pkh == x then Just y else lookup pkh xs
 
----- ?
-
 ------------------------------------------------------------------------------------------------------------------------------
--- on-chain for Validator
+-- Generic helper functions that get compiled as part of the validator
 ------------------------------------------------------------------------------------------------------------------------------
-
----- ScriptContext Stuff
 
 {-# INLINEABLE ownOutput #-}
 ownOutput :: ScriptContext -> TxOut
@@ -279,7 +220,7 @@ lovelaceValue = singleton adaSymbol adaToken
 
 {-# INLINEABLE minValue #-}
 minValue :: Value
-minValue = lovelaceValue (Ada.getLovelace 3000000) -- minAdaTxOutEstimated)
+minValue = lovelaceValue (Ada.getLovelace 3000000)
 
 {-# INLINEABLE emptyValue #-}
 emptyValue :: Value
@@ -308,7 +249,9 @@ checkTokenBurned ac ctx = case flattenValue (txInfoMint (scriptContextTxInfo ctx
     | otherwise -> False
   _ -> False
 
--------
+------------------------------------------------------------------------------------------------------------------------------
+-- Contract-specific helper functions that get compiled as part of the validator
+------------------------------------------------------------------------------------------------------------------------------
 
 {-# INLINEABLE checkMembership #-}
 checkMembership :: Maybe Value -> Bool
@@ -372,6 +315,11 @@ checkTransfer tok (Just vF) (Just vT) from to val lab ctx =
     && newDatum ctx
     == (tok, insert from (vF - val) (insert to (vT + val) lab))
 
+------------------------------------------------------------------------------------------------------------------------------
+-- The Validator
+------------------------------------------------------------------------------------------------------------------------------
+
+-- Declaring the type of the validator
 data AccountSim
 instance Scripts.ValidatorTypes AccountSim where
   type RedeemerType AccountSim = Input
@@ -438,13 +386,17 @@ agdaValidator (tok, lab) inp ctx =
           && lab
           == []
 
+------------------------------------------------------------------------------------------------------------------------------
+-- Compiling the validator
+------------------------------------------------------------------------------------------------------------------------------
+
 smTypedValidator :: V3.TypedValidator AccountSim
 smTypedValidator =
   V3.mkTypedValidator @AccountSim
     $$(PlutusTx.compile [||agdaValidator||])
     $$(PlutusTx.compile [||wrap||])
   where
-    wrap = Scripts.mkUntypedValidator -- @ScriptContext @State @Input
+    wrap = Scripts.mkUntypedValidator
 
 mkAddress :: Ledger.CardanoAddress
 mkAddress = validatorCardanoAddress testnet smTypedValidator
@@ -453,14 +405,9 @@ mkOtherAddress :: Address
 mkOtherAddress = V3.validatorAddress smTypedValidator
 
 ------------------------------------------------------------------------------------------------------------------------------
--- on-chain for Minting Policy
+-- Generic helper functions that get compiled as part of the Minting Policy Script
 ------------------------------------------------------------------------------------------------------------------------------
 
-{-
-{-# INLINEABLE tn #-}
-tn :: TokenName
-tn = "ThreadToken"
--}
 {-# INLINEABLE getMintedAmount #-}
 getMintedAmount :: ScriptContext -> Integer
 getMintedAmount ctx = case flattenValue (txInfoMint (scriptContextTxInfo ctx)) of
@@ -502,6 +449,10 @@ newDatumAddr addr ctx = case txOutDatum (outputAtAddr addr ctx) of
     Just d -> d
   OutputDatum dat -> PlutusTx.unsafeFromBuiltinData @Label (getDatum dat)
 
+------------------------------------------------------------------------------------------------------------------------------
+-- Thread Token functions that get compiled as part of the Minting Policy Script
+------------------------------------------------------------------------------------------------------------------------------
+
 {-# INLINEABLE checkDatum #-}
 checkDatum :: Address -> TokenName -> ScriptContext -> Bool
 checkDatum addr tn ctx =
@@ -517,7 +468,9 @@ checkValue addr tn ctx =
 isInitial :: Address -> TxOutRef -> TokenName -> ScriptContext -> Bool
 isInitial addr oref tn ctx = consumes oref ctx && checkValue addr tn ctx && checkDatum addr tn ctx
 
--- for some reason not parametrizing on tokenName causes issues??
+------------------------------------------------------------------------------------------------------------------------------
+-- The Minting Policy Script
+------------------------------------------------------------------------------------------------------------------------------
 
 {-# INLINEABLE agdaPolicy #-}
 agdaPolicy :: Address -> TxOutRef -> TokenName -> () -> ScriptContext -> Bool
@@ -528,6 +481,10 @@ agdaPolicy addr oref tn _ ctx =
   where
     amt :: Integer
     amt = getMintedAmount ctx
+
+------------------------------------------------------------------------------------------------------------------------------
+-- Compiling the Minting Policy Script
+------------------------------------------------------------------------------------------------------------------------------
 
 policy :: TxOutRef -> TokenName -> V3.MintingPolicy
 policy oref tn =
@@ -557,33 +514,9 @@ mintingHash oref tn = V3.mintingPolicyHash (policy oref tn)
 getPid :: TxOutRef -> TokenName -> Ledger.PolicyId
 getPid oref tn = Ledger.policyId (versionedPolicy oref tn)
 
-{-
-
-  case txOutDatum (ownOutput ctx) of
-  NoOutputDatum -> error ()
-  OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
-    Nothing -> error ()
-    Just d -> d
-  OutputDatum d -> PlutusTx.unsafeFromBuiltinData (getDatum d)
-
-checkDatum :: Address -> TokenName -> ScriptContext -> Bool
-checkDatum addr tn ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfoOutputs (scriptContextTxInfo ctx)) of
-  [o] -> case txOutDatum o of
-    NoOutputDatum -> False
-    OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
-      Nothing -> False
-      Just d -> d == (AssetClass (ownCurrencySymbol ctx, tn), []) -- tToken d == AssetClass (cs, tn) && label d == Holding
-    OutputDatum dat -> case PlutusTx.unsafeFromBuiltinData @State (getDatum dat) of
-      d -> d == (AssetClass (ownCurrencySymbol ctx, tn), []) -- tToken d == AssetClass (cs, tn) && label d == Holding
-      _ -> False
-  _ -> False
-
-checkValue :: Address -> TokenName -> ScriptContext -> Bool
-checkValue addr tn ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfoOutputs (scriptContextTxInfo ctx)) of
-  [o] -> valueOf (txOutValue o) (ownCurrencySymbol ctx) tn == 1
-  _ -> False
--}
-------------------------------------------------------------------------------
+------------------------------------------------------------------------------------------------------------------------------
+-- Code for testing and exporting the validator to a file
+------------------------------------------------------------------------------------------------------------------------------
 
 covIdx = getCovIdx $$(PlutusTx.compile [||agdaValidator||])
 covIdx :: CoverageIndex
@@ -597,13 +530,13 @@ serialisedNP :: C.PlutusScript C.PlutusScriptV3
 serialisedNP = C.PlutusScriptSerialised test
 
 writeCcode :: IO ()
-writeCcode = void $ C.writeFileTextEnvelope "ccode.plutus" Nothing serialisedNP
+writeCcode = void $ C.writeFileTextEnvelope "ccodeAccountSim.plutus" Nothing serialisedNP
 
 printPir :: PlutusTx.CompiledCode a -> Doc b
 printPir c = (prettyPirReadable (view progTerm (fromJust (getPirNoAnn c))))
 
 writePir :: IO ()
-writePir = writeFile "pir.txt" (show (printPir ccode))
+writePir = writeFile "pirAccountSim.txt" (show (printPir ccode))
 
 writeUplc :: IO ()
-writeUplc = writeFile "uplc.txt" (show (getPlcNoAnn ccode {--}))
+writeUplc = writeFile "uplcAccountSim.txt" (show (getPlcNoAnn ccode))

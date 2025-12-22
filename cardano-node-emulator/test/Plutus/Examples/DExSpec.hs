@@ -11,43 +11,32 @@
 {-# LANGUAGE NumericUnderscores #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
--- maybe here the version stuff happens
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 
--- {-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:conservative-optimisation #-}
-
+-- Test code for the Limit Order Book Distributed Exchange
 module Plutus.Examples.DExSpec (
   tests,
   prop_DEx,
-  -- prop_Check,
   checkPropDExWithCoverage,
-  {-prop_Escrow_DoubleSatisfaction,
-  prop_FinishEscrow,
-  prop_observeEscrow,
-  prop_NoLockedFunds,
-  prop_validityChecks,
-  checkPropEscrowWithCoverage,
-  EscrowModel,
-  normalCertification,
-  normalCertification',
-  quickCertificationWithCheckOptions,
-  outputCoverageOfQuickCertification,
-  runS-}
 ) where
 
-import Control.Lens (At (at), makeLenses, to, (%=), (.=), (^.))
-import Control.Monad (void, when)
-import Control.Monad.Trans (lift)
-import Data.Default (Default (def))
-import Data.Foldable (Foldable (fold, length, null), sequence_)
-import Data.Map (Map)
-import Data.Map qualified as Map
-import GHC.Generics (Generic)
-
+import Cardano.Api (
+  AddressInEra (AddressInEra),
+  AllegraEraOnwards (AllegraEraOnwardsConway),
+  AssetName (..),
+  IsShelleyBasedEra (shelleyBasedEra),
+  PolicyId (..),
+  TxOut (TxOut),
+  TxValidityLowerBound (TxValidityLowerBound, TxValidityNoLowerBound),
+  TxValidityUpperBound (TxValidityUpperBound),
+  UTxO (unUTxO),
+  toAddressAny,
+ )
+import Cardano.Api qualified as API
 import Cardano.Api.Shelley (toPlutusData)
 import Cardano.Node.Emulator qualified as E
 import Cardano.Node.Emulator.Internal.Node.Params qualified as Params
@@ -64,11 +53,32 @@ import Cardano.Node.Emulator.Test.NoLockedFunds (
   checkNoLockedFundsProofWithOptions,
   defaultNLFP,
  )
+import Control.Lens (At (at), makeLenses, to, (%=), (.=), (^.))
+import Control.Monad (void, when)
+import Control.Monad.Trans (lift)
+import Data.Default (Default (def))
+import Data.Foldable (Foldable (fold, length, null), sequence_)
+import Data.Map (Map)
+import Data.Map qualified as Map
+import Data.Maybe (fromJust)
+import Debug.Trace
+import GHC.Generics (Generic)
 import Ledger (Slot, minAdaTxOutEstimated)
 import Ledger qualified
 import Ledger.Tx.CardanoAPI (fromCardanoSlotNo)
 import Ledger.Typed.Scripts qualified as Scripts
 import Ledger.Value.CardanoAPI qualified as Value
+import Plutus.Examples.DEx hiding (Info (..), Input (..))
+import Plutus.Examples.DEx qualified as Impl
+import Plutus.Examples.DExAPI (
+  close,
+  exchange,
+  getPayAmt,
+  paymentValue,
+  start,
+  unite,
+  update,
+ )
 import Plutus.Script.Utils.Ada qualified as Ada
 import Plutus.Script.Utils.Value (
   AssetClass (..),
@@ -82,44 +92,11 @@ import Plutus.Script.Utils.Value (
   valueOf,
  )
 import PlutusLedgerApi.V1.Time (POSIXTime)
-
-import Plutus.Examples.DEx hiding (Info (..), Input (..))
-
--- Params (..),
-
--- typedValidator,
-
-import Plutus.Examples.DEx qualified as Impl
-import Plutus.Examples.DExAPI (
-  close,
-  exchange,
-  getPayAmt,
-  paymentValue,
-  -- paymentValue
-  start,
-  unite,
-  update,
- )
-
 import PlutusTx (fromData)
+import PlutusTx.Builtins qualified as Builtins
 import PlutusTx.Monoid (inv)
 import PlutusTx.Prelude qualified as PlutusTx
 import PlutusTx.Ratio
-
-import Data.Maybe (fromJust)
-
-import Cardano.Api (
-  AddressInEra (AddressInEra),
-  AllegraEraOnwards (AllegraEraOnwardsConway),
-  AssetName (..),
-  IsShelleyBasedEra (shelleyBasedEra),
-  PolicyId (..),
-  TxOut (TxOut),
-  TxValidityLowerBound (TxValidityLowerBound, TxValidityNoLowerBound),
-  TxValidityUpperBound (TxValidityUpperBound),
-  UTxO (unUTxO),
-  toAddressAny,
- )
 import Test.QuickCheck qualified as QC hiding ((.&&.))
 import Test.QuickCheck.ContractModel (
   Action,
@@ -162,11 +139,11 @@ import Test.Tasty.QuickCheck (
   testProperty,
  )
 
-import Cardano.Api qualified as API
-import PlutusTx.Builtins qualified as Builtins
+------------------------------------------------------------------------------------------------------------------------------
+-- Helper functions and setup
+------------------------------------------------------------------------------------------------------------------------------
 
-import Debug.Trace
-
+-- Dummy tokens to be used in the exchange
 scs :: CurrencySymbol
 scs = "1111864fcc779b5373d97e3beefe5dd3705bbfe41972acd9bb6ebe9e"
 
@@ -208,7 +185,7 @@ walletPrivateKey :: Wallet -> Ledger.PaymentPrivateKey
 walletPrivateKey = (E.knownPaymentPrivateKeys !!) . pred . fromIntegral
 
 testWallets :: [Wallet]
-testWallets = [w1, w2, w3, w4, w5, w6] -- removed five to increase collisions (, w6, w7, w8, w9, w10])
+testWallets = [w1, w2, w3, w4, w5, w6]
 
 walletPaymentPubKeyHash :: Wallet -> Ledger.PaymentPubKeyHash
 walletPaymentPubKeyHash =
@@ -232,27 +209,21 @@ tn = "ThreadToken"
 curr :: CurrencySymbol
 curr = "f842be32d6e72c2003925d8719dca9397f96e7e32272b9d0d80b6d79"
 
+-- Two Thread Tokens are necessary if you open two different instances of the contract
 tn' :: TokenName
 tn' = "ThreadToken"
 
 curr' :: CurrencySymbol
-curr' = "302ab3c023d2d3a2ca0fd2d25b8ca68725bd05b4f88cbde01cade0a1" -- "fdcfa80f3cd89b403225688ce8c8c7ee2437a4bf137f481abbc7263b"
-
-tn'' :: TokenName
-tn'' = "ThreadToken"
-
-curr'' :: CurrencySymbol
-curr'' = "302ab3c023d2d3a2ca0fd2d25b8ca68725bd05b4f88cbde01cade0a1"
+curr' = "302ab3c023d2d3a2ca0fd2d25b8ca68725bd05b4f88cbde01cade0a1"
 
 tin :: API.TxIn
 tin = API.TxIn "a1ad2a0753129bc558b039ed06b7373de2847e72c2ec7bccf89afd442ccf3f5d" (API.TxIx 5)
 
+-- A second TxIn for the second Thread Token is also necessary
 tin' :: API.TxIn
 tin' = API.TxIn "9b46c94581afc2e1e81e9cacfd0cf734b6b8512bade903cd88e9b59b5e192045" (API.TxIx 1)
 
-tin'' :: API.TxIn
-tin'' = API.TxIn "b0de2873afe95a6530bf1ae88096cf43e17bb2ee669f9ba600838949ac1e08ec" (API.TxIx 4)
-
+-- Debug Switches
 ok :: Bool
 ok = False
 
@@ -296,11 +267,9 @@ fromAssetName (API.AssetName bs) = TokenName $ Builtins.toBuiltin bs
 paymentValue' :: AssetClass -> Integer -> Value.Value
 paymentValue' ac amt = Value.singleton (toPolicyId (fst (unAssetClass ac))) (toAssetName (snd (unAssetClass ac))) amt
 
--- paymentValue' :: AssetClass -> Integer -> Value
--- paymentValue' ac amt = Map.singleton (fst (unAssetClass ac)) (snd (unAssetClass ac)) amt
-
--- makeRational :: Integer -> Integer -> Value
--- makeRational num den =
+------------------------------------------------------------------------------------------------------------------------------
+-- Code for generating quick-check tests and the model of the smart contract
+------------------------------------------------------------------------------------------------------------------------------
 
 data Phase
   = Initial
@@ -311,7 +280,7 @@ data DExModel = DExModel
   { _actualValue :: Value
   , _buyAC :: Maybe AssetClass
   , _sellAC :: Maybe AssetClass
-  , _threadToken :: Maybe QCCM.SymToken -- AssetClass
+  , _threadToken :: Maybe QCCM.SymToken
   , _txIn :: Maybe QCCM.SymTxIn
   , _phase :: Phase
   , _rate :: Maybe PlutusTx.Ratio.Rational
@@ -377,7 +346,7 @@ instance ContractModel DExModel where
       { _actualValue = mempty
       , _buyAC = Nothing
       , _sellAC = Nothing
-      , _threadToken = Nothing -- tt --AssetClass (adaSymbol, adaToken)
+      , _threadToken = Nothing
       , _txIn = Nothing
       , _phase = Initial
       , _rate = Nothing
@@ -385,7 +354,6 @@ instance ContractModel DExModel where
       , _count = [(w1, 0), (w2, 0), (w3, 0), (w4, 0), (w5, 0), (w6, 0)]
       }
 
-  -- here?
   nextState a = void $ case a of
     Unite w -> do
       count' <- viewContractState count
@@ -404,7 +372,6 @@ instance ContractModel DExModel where
       phase .= Running
       count .= increment w count'
       owner .= Just w
-      -- actualValue .= v
       rate .= Just r
       wait 1
     Exchange amt w -> do
@@ -452,7 +419,7 @@ instance ContractModel DExModel where
       phase .= Initial
       count .= increment w count'
       actualValue' <- viewContractState actualValue
-      deposit (walletAddress w) (actualValue') -- <> (fromJust (viewContractState threadToken)))
+      deposit (walletAddress w) (actualValue')
       actualValue .= mempty
       threadToken .= Nothing
       txIn .= Nothing
@@ -469,10 +436,7 @@ instance ContractModel DExModel where
       currentPhase == Running
         && (w /= owner')
         && ((getCount w count') < 3)
-        && ( amt' > amt + 500 {-&&
-                              (currentValue `geq` (paymentValue (fst (unAssetClass sellC))
-                                    (snd (unAssetClass sellC)) amt))-}
-           )
+        && (amt' > amt + 500)
     Start w v r bac sac -> currentPhase == Initial && ((getCount w count') < 3)
     Close w -> currentPhase == Running && (w == owner') && ((getCount w count') < 3)
     where
@@ -481,22 +445,19 @@ instance ContractModel DExModel where
       owner' = fromJust $ (s ^. contractState . owner)
       sellC = fromJust $ (s ^. contractState . sellAC)
       count' = s ^. contractState . count
-      amount = (s ^. contractState . actualValue) -- <> (PlutusTx.negate (Ada.toValue Ledger.minAdaTxOutEstimated))
-      curr = stok -- fromJust (s ^. contractState . sellAC)
+      amount = (s ^. contractState . actualValue)
+      curr = stok
       amt' = valueOf amount (fst (unAssetClass curr)) (snd (unAssetClass curr))
 
-  -- enable again later
   validFailingAction _ _ = False
 
-  -- put token back in Start
   arbitraryAction s =
     frequency
       [
         ( 10
         , Update
             <$> genWallet
-            <*> genValue -- ( (Ada.lovelaceValueOf <$> choose ((Ada.getLovelace Ledger.minAdaTxOutEstimated), 1_000_000)) )
-            -- <> paymentValue (fst (unAssetClass sellC)) (snd (unAssetClass sellC)) <$> choose (1000 , 5000) )
+            <*> genValue
             <*> (fromJust <$> (ratio <$> chooseInteger (1, 10) <*> chooseInteger (1, 10)))
         )
       , (10, Exchange <$> chooseInteger (500, amt) <*> genWallet) -- keep checking with 1
@@ -506,18 +467,16 @@ instance ContractModel DExModel where
         ( 2
         , Start
             <$> genWallet
-            <*> genValue -- ( (Ada.lovelaceValueOf <$> choose ((Ada.getLovelace Ledger.minAdaTxOutEstimated), 1_000_000))
-            -- <> paymentValue (fst (unAssetClass sellC)) (snd (unAssetClass sellC)) <$> choose (1000 , 5000) )
+            <*> genValue
             <*> (fromJust <$> (ratio <$> chooseInteger (1, 10) <*> chooseInteger (1, 10)))
             <*> genBT
             <*> genST
         )
       ]
     where
-      amount = (s ^. contractState . actualValue) -- <> (PlutusTx.negate (Ada.toValue Ledger.minAdaTxOutEstimated))
-      curr = stok -- fromJust (s ^. contractState . sellAC)
+      amount = (s ^. contractState . actualValue)
+      curr = stok
       amt = valueOf amount (fst (unAssetClass curr)) (snd (unAssetClass curr))
-      --  sellC = fromJust $ (s ^. contractState . sellAC)
 
       genValue :: QC.Gen Value
       genValue = do
@@ -525,80 +484,6 @@ instance ContractModel DExModel where
         amt <- choose (2000, 5000)
         pure
           (Ada.lovelaceValueOf ada <> paymentValue (fst (unAssetClass curr)) (snd (unAssetClass curr)) amt)
-
---     (Ada.lovelaceValueOf <$> choose ((Ada.getLovelace Ledger.minAdaTxOutEstimated), 1_000_000))
---               (paymentValue (fst (unAssetClass sellC)) (snd (unAssetClass sellC)) <$> choose (1000 , 5000))
--- ( paymentValue (fst (unAssetClass sellC)) (snd (unAssetClass sellC)) <$> choose (1000 , 5000) )
-
-{-}
-        w <- genWallet
-        let max =
-              ( case (lookup w accounts) of
-                  Just v -> valueOf v Ada.adaSymbol Ada.adaToken
-                  Nothing -> 0
-              )
-        pure (Transfer w)
-          <*> genWallet
-          <*> ( Ada.lovelaceValueOf
-                  <$> choose ((Ada.getLovelace Ledger.minAdaTxOutEstimated), max) ) -}
-
--- int' = Ledger.getSlot slot'
-
-{-instance RunModel MultiSigModel E.EmulatorM where
-  perform _ cmd _ = lift $ void $ act cmd-}
-
-{-
-act' :: Action MultiSigModel -> AssetClass -> E.EmulatorM ()
-act' a tok = case a of
-  Propose w1 v w2 d ->
-    void $
-      propose
-        (walletAddress w1)
-        (walletPrivateKey w1)
-        modelParams
-        v
-        (walletPaymentPubKeyHash w2)
-        d
-        tok
-  Add w ->
-    void $
-      add
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        tok
-  Pay w ->
-    void $
-      pay
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        tok
-  Cancel w ->
-    void $
-      cancel
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        tok
-  Start w v ->
-    void $
-      start
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        v
-        ok
-  Close w ->
-    void $
-      close
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        tok
-        tin'
-        ok'
--}
 
 act :: Action DExModel -> E.EmulatorM ()
 act = \case
@@ -644,8 +529,6 @@ act = \case
         (walletPrivateKey w)
 
 instance RunModel DExModel E.EmulatorM where
-  --  perform _ cmd _ = lift $ act cmd
-
   perform s (Start w v r bac sac) translate = do
     (oref, tin, tout) <- lift $ start (walletAddress w) (walletPrivateKey w) modelParams v r False
     QCCM.registerToken "thread token" (toAssetId (makeTT oref))
@@ -686,31 +569,12 @@ instance RunModel DExModel E.EmulatorM where
         (walletAddress w)
         (walletPrivateKey w)
 
-currC :: Value.PolicyId
-currC = PolicyId{unPolicyId = "c7c9864fcc779b5573d97e3beefe5dd3705bbfe41972acd9bb6ebe9e"}
-
-tnC :: Value.AssetName
-tnC = AssetName "OtherToken"
+------------------------------------------------------------------------------------------------------------------------------
+-- Tests
+------------------------------------------------------------------------------------------------------------------------------
 
 prop_DEx :: Actions DExModel -> Property
 prop_DEx = E.propRunActionsWithOptions options
-
-{-
-simpleVestTest :: DL DExModel ()
-simpleVestTest = do
-  action $ Start 1 (Ada.adaValueOf 100)
-  action $ Propose 2 (Ada.adaValueOf 10) 3 111111111111111111111111111
-  action $ Add 4
-  action $ Add 4
-  action $ Add 5
-  action $ Add 4
-  action $ Cancel 2
-
-prop_Check :: Property
-prop_Check = forAllDL simpleVestTest prop_DEx-}
-
-prop_DEx_DoubleSatisfaction :: Actions DExModel -> Property
-prop_DEx_DoubleSatisfaction = E.checkDoubleSatisfactionWithOptions options
 
 tests :: TestTree
 tests =
@@ -720,7 +584,7 @@ tests =
         options
         "can start"
         ( hasValidatedTransactionCountOfTotal 1 1
-            .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-100) <> paymentValue' stok (-1000)) -- <> Value.singleton currC tnC (-1)))
+            .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-100) <> paymentValue' stok (-1000))
         )
         $ do
           act $
@@ -736,7 +600,7 @@ tests =
         options
         "can Update"
         ( hasValidatedTransactionCountOfTotal 2 2
-            .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-100) <> paymentValue' stok (-1900)) -- <> Value.singleton currC tnC (-1)))
+            .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-100) <> paymentValue' stok (-1900))
         )
         $ do
           act $
@@ -760,7 +624,7 @@ tests =
         options
         "can Multiple Update"
         ( hasValidatedTransactionCountOfTotal 3 3
-            .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-50) <> paymentValue' stok (-5)) -- <> Value.singleton currC tnC (-1)))
+            .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-50) <> paymentValue' stok (-5))
         )
         $ do
           act $
@@ -804,7 +668,6 @@ tests =
                   <> paymentValue' stok (100)
                   <> paymentValue' btok (-50)
               )
-              -- <> Value.singleton currC tnC (-1)))
         )
         $ do
           act $
@@ -823,7 +686,7 @@ tests =
         ( hasValidatedTransactionCountOfTotal 4 4
             .&&. walletFundsChange
               (walletAddress w1)
-              (Value.adaValueOf (-91) <> paymentValue' stok (-1000) <> paymentValue' btok (150)) -- <> Value.singleton currC tnC (-1)))
+              (Value.adaValueOf (-91) <> paymentValue' stok (-1000) <> paymentValue' btok (150))
             .&&. walletFundsChange
               (walletAddress w2)
               (Value.adaValueOf (-3) <> paymentValue' btok (-50) <> paymentValue' stok (100))
@@ -851,10 +714,7 @@ tests =
         options
         "can Close"
         ( hasValidatedTransactionCountOfTotal 2 2
-            .&&. walletFundsChange (walletAddress w1) mempty -- <> Value.singleton currC tnC (-1)))
-            --              .&&. walletFundsChange (walletAddress w2) (Value.adaValueOf (-3) <> paymentValue' btok (-50) <> paymentValue' stok (100))
-            --             .&&. walletFundsChange (walletAddress w6) (Value.adaValueOf (-3) <> paymentValue' btok (-50) <> paymentValue' stok (100))
-            --           .&&. walletFundsChange (walletAddress w4) (Value.adaValueOf (-3) <> paymentValue' btok (-50) <> paymentValue' stok (100))
+            .&&. walletFundsChange (walletAddress w1) mempty
         )
         $ do
           act $
@@ -871,10 +731,7 @@ tests =
         options
         "can Restart"
         ( hasValidatedTransactionCountOfTotal 3 3
-            .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-100) <> paymentValue' stok (-1000)) -- <> Value.singleton currC tnC (-1)))
-            --              .&&. walletFundsChange (walletAddress w2) (Value.adaValueOf (-3) <> paymentValue' btok (-50) <> paymentValue' stok (100))
-            --            .&&. walletFundsChange (walletAddress w6) (Value.adaValueOf (-3) <> paymentValue' btok (-50) <> paymentValue' stok (100))
-            --          .&&. walletFundsChange (walletAddress w4) (Value.adaValueOf (-3) <> paymentValue' btok (-50) <> paymentValue' stok (100))
+            .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-100) <> paymentValue' stok (-1000))
         )
         $ do
           act $
@@ -918,7 +775,6 @@ tests =
                   <> paymentValue' stok (300)
                   <> paymentValue' btok (-900)
               )
-              -- <> Value.singleton currC tnC (-1)))
         )
         $ do
           act $
@@ -943,7 +799,7 @@ tests =
           act $ Close 1
     , checkPredicateOptions
         options
-        "Manual Test"
+        "Specific Update"
         ( hasValidatedTransactionCountOfTotal 7 7
         )
         $ do
@@ -956,7 +812,6 @@ tests =
               (fromJust (ratio 1 7))
               stok
               btok
-          -- act $ Exchange 4017 2
           act $ Exchange 262 5
           act $ Exchange 134 5
           act $
@@ -972,7 +827,7 @@ tests =
           act $ Unite 5
     , checkPredicateOptions
         options
-        "Manual Test2"
+        "Specific Exchange"
         ( hasValidatedTransactionCountOfTotal 3 3
         )
         $ do
@@ -987,26 +842,8 @@ tests =
               btok
           act $ Exchange 598 3
           act $ Exchange 1051 2
-    , testProperty "QuickCheck ContractModel" $ QC.withMaxSuccess 100 (QC.noShrinking prop_DEx {--})
-    --   , testProperty "QuickCheck CancelDL" (QC.expectFailure prop_Check)
-    -- , testProperty "QuickCheck double satisfaction" $ prop_MultiSig_DoubleSatisfaction
+    , testProperty "QuickCheck ContractModel" $ QC.withMaxSuccess 100 (QC.noShrinking prop_DEx)
     ]
-
-{-    , testProperty "QuickCheck double satisfaction fails" $
-        QC.expectFailure (QC.noShrinking prop_MultiSig_DoubleSatisfaction)-}
--- QC.verbose
-
-{-
-BalancingError
-(InsufficientFunds
-{total = valueFromList
-[(AdaAssetId,99999899981264241),
-(AssetId "1111864fcc779b5373d97e3beefe5dd3705bbfe41972acd9bb6ebe9e" "SellToken",997124),
-(AssetId "2222864fcc779b5373d97e3beefe5dd3705bbfe41972acd9bb6ebe9e" "BuyToken",1000000)],
-expected = valueFromList
-[(AssetId "1111864fcc779b5373d97e3beefe5dd3705bbfe41972acd9bb6ebe9e" "SellToken",866),
-(AssetId "f842be32d6e72c2003925d8719dca9397f96e7e32272b9d0d80b6d79" "ThreadToken",1)]})
--}
 
 checkPropDExWithCoverage :: IO ()
 checkPropDExWithCoverage = do

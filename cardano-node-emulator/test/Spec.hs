@@ -29,5 +29,4 @@ tests =
       DExSpec.tests
     , AccountSimSpec.tests
     , MultiSigSpec.tests
-    -- , CIP1694Test.tests
     ]

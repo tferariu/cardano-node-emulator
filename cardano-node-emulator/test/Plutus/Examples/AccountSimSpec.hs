@@ -10,43 +10,33 @@
 {-# LANGUAGE MultiParamTypeClasses #-}
 {-# LANGUAGE OverloadedStrings #-}
 {-# LANGUAGE StandaloneDeriving #-}
--- maybe here the version stuff happens
 {-# LANGUAGE TemplateHaskell #-}
 {-# LANGUAGE TupleSections #-}
 {-# LANGUAGE TypeApplications #-}
 {-# LANGUAGE TypeFamilies #-}
 {-# OPTIONS_GHC -fno-warn-name-shadowing #-}
 
--- {-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:conservative-optimisation #-}
-
+-- Test code for the Account Simulation on UTxO
 module Plutus.Examples.AccountSimSpec (
   tests,
   prop_AccountSim,
   prop_Check,
   checkPropAccountSimWithCoverage,
-  {-prop_Escrow_DoubleSatisfaction,
-  prop_FinishEscrow,
-  prop_observeEscrow,
-  prop_NoLockedFunds,
-  prop_validityChecks,
-  checkPropEscrowWithCoverage,
-  EscrowModel,
-  normalCertification,
-  normalCertification',
-  quickCertificationWithCheckOptions,
-  outputCoverageOfQuickCertification,
-  runS-}
 ) where
 
-import Control.Lens (At (at), makeLenses, to, (%=), (.=), (^.))
-import Control.Monad (void, when)
-import Control.Monad.Trans (lift)
-import Data.Default (Default (def))
-import Data.Foldable (Foldable (fold, length, null), sequence_)
-import Data.Map (Map)
-import Data.Map qualified as Map
-import GHC.Generics (Generic)
-
+import Cardano.Api (
+  AddressInEra (AddressInEra),
+  AllegraEraOnwards (AllegraEraOnwardsConway),
+  AssetName (..),
+  IsShelleyBasedEra (shelleyBasedEra),
+  PolicyId (..),
+  TxOut (TxOut),
+  TxValidityLowerBound (TxValidityLowerBound, TxValidityNoLowerBound),
+  TxValidityUpperBound (TxValidityUpperBound),
+  UTxO (unUTxO),
+  toAddressAny,
+ )
+import Cardano.Api qualified as API
 import Cardano.Api.Shelley (toPlutusData)
 import Cardano.Node.Emulator qualified as E
 import Cardano.Node.Emulator.Internal.Node.Params qualified as Params
@@ -63,11 +53,23 @@ import Cardano.Node.Emulator.Test.NoLockedFunds (
   checkNoLockedFundsProofWithOptions,
   defaultNLFP,
  )
+import Control.Lens (At (at), makeLenses, to, (%=), (.=), (^.))
+import Control.Monad (void, when)
+import Control.Monad.Trans (lift)
+import Data.Default (Default (def))
+import Data.Foldable (Foldable (fold, length, null), sequence_)
+import Data.Map (Map)
+import Data.Map qualified as Map
+import Data.Maybe (fromJust)
+import GHC.Generics (Generic)
 import Ledger (Slot, minAdaTxOutEstimated)
 import Ledger qualified
 import Ledger.Tx.CardanoAPI (fromCardanoSlotNo)
 import Ledger.Typed.Scripts qualified as Scripts
 import Ledger.Value.CardanoAPI qualified as Value
+import Plutus.Examples.AccountSim hiding (Input (..), Label (..), delete, insert, lookup)
+import Plutus.Examples.AccountSim qualified as Impl
+import Plutus.Examples.AccountSimAPI qualified as API
 import Plutus.Script.Utils.Ada qualified as Ada
 import Plutus.Script.Utils.Value (
   AssetClass (..),
@@ -81,43 +83,10 @@ import Plutus.Script.Utils.Value (
   valueOf,
  )
 import PlutusLedgerApi.V1.Time (POSIXTime)
-
-import Plutus.Examples.AccountSim hiding (Input (..), Label (..), delete, insert, lookup)
-
--- Params (..),
-
--- typedValidator,
-
-import Plutus.Examples.AccountSim qualified as Impl
-import Plutus.Examples.AccountSimAPI qualified as API
-
-{-(
-  start,
-  open,
-  close,
-  withdraw,
-  deposit,
-  transfer,
- )-}
-
 import PlutusTx (fromData)
+import PlutusTx.Builtins qualified as Builtins
 import PlutusTx.Monoid (inv)
 import PlutusTx.Prelude qualified as PlutusTx
-
-import Data.Maybe (fromJust)
-
-import Cardano.Api (
-  AddressInEra (AddressInEra),
-  AllegraEraOnwards (AllegraEraOnwardsConway),
-  AssetName (..),
-  IsShelleyBasedEra (shelleyBasedEra),
-  PolicyId (..),
-  TxOut (TxOut),
-  TxValidityLowerBound (TxValidityLowerBound, TxValidityNoLowerBound),
-  TxValidityUpperBound (TxValidityUpperBound),
-  UTxO (unUTxO),
-  toAddressAny,
- )
 import Test.QuickCheck qualified as QC hiding ((.&&.))
 import Test.QuickCheck.ContractModel (
   Action,
@@ -160,8 +129,9 @@ import Test.Tasty.QuickCheck (
   testProperty,
  )
 
-import Cardano.Api qualified as API
-import PlutusTx.Builtins qualified as Builtins
+------------------------------------------------------------------------------------------------------------------------------
+-- Generic helper functions and setup
+------------------------------------------------------------------------------------------------------------------------------
 
 type Wallet = Integer
 
@@ -179,7 +149,7 @@ walletPrivateKey :: Wallet -> Ledger.PaymentPrivateKey
 walletPrivateKey = (E.knownPaymentPrivateKeys !!) . pred . fromIntegral
 
 testWallets :: [Wallet]
-testWallets = [w1, w2, w3, w4, w5] -- removed five to increase collisions (, w6, w7, w8, w9, w10])
+testWallets = [w1, w2, w3, w4, w5]
 
 walletPaymentPubKeyHash :: Wallet -> Ledger.PaymentPubKeyHash
 walletPaymentPubKeyHash =
@@ -190,6 +160,40 @@ walletPaymentPubKeyHash =
     . pred
     . fromIntegral
 
+beginningOfTime :: Integer
+beginningOfTime = 1596059091000
+
+toAssetId :: AssetClass -> API.AssetId
+toAssetId (AssetClass (sym, tok))
+  | sym == Ada.adaSymbol, tok == Ada.adaToken = API.AdaAssetId
+  | otherwise = API.AssetId (toPolicyId sym) (toAssetName tok)
+
+toPolicyId :: CurrencySymbol -> API.PolicyId
+toPolicyId sym@(CurrencySymbol bs) =
+  either
+    (error . show)
+    API.PolicyId
+    (API.deserialiseFromRawBytes API.AsScriptHash (Builtins.fromBuiltin bs))
+
+toAssetName :: TokenName -> API.AssetName
+toAssetName (TokenName bs) = API.AssetName $ Builtins.fromBuiltin bs
+
+fromAssetId :: API.AssetId -> AssetClass
+fromAssetId API.AdaAssetId = AssetClass (Ada.adaSymbol, Ada.adaToken)
+fromAssetId (API.AssetId policy name) = AssetClass (fromPolicyId policy, fromAssetName name)
+
+fromPolicyId :: API.PolicyId -> CurrencySymbol
+fromPolicyId (API.PolicyId hash) = CurrencySymbol . Builtins.toBuiltin $ API.serialiseToRawBytes hash
+
+fromAssetName :: API.AssetName -> TokenName
+fromAssetName (API.AssetName bs) = TokenName $ Builtins.toBuiltin bs
+
+{-
+The token name and currency symbol needs to be extracted manually for the
+unit tests. The written off-chain code produces errors that help get the
+currency symbol if the validator or minting policy ever change. The quick-check
+handles the Token using symbolic data.
+-}
 tn :: TokenName
 tn = "ThreadToken"
 
@@ -202,8 +206,13 @@ tt = assetClass curr tn
 makeTT :: Ledger.TxOutRef -> AssetClass
 makeTT oref = assetClass (curSymbol oref tn) tn
 
+-- Similarly the TxIn of the UTxO spent to guarantee Thread Token Uniqueness is baked in
 tin :: API.TxIn
 tin = API.TxIn "b0de2873afe95a6530bf1ae88096cf43e17bb2ee669f9ba600838949ac1e08ec" (API.TxIx 5)
+
+------------------------------------------------------------------------------------------------------------------------------
+-- Code for generating quick-check tests and the model of the smart contract
+------------------------------------------------------------------------------------------------------------------------------
 
 data Phase
   = Initial
@@ -235,11 +244,11 @@ lookupGT w v ((x, y) : xs) =
 lookupEmpty :: Wallet -> Label -> Bool
 lookupEmpty w [] = False
 lookupEmpty w ((x, y) : xs) =
-  if w == x then y == (Ada.toValue 0) else lookupEmpty w xs -- emptyVal
+  if w == x then y == (Ada.toValue 0) else lookupEmpty w xs
 
 data AccountSimModel = AccountSimModel
   { _actualValue :: Value
-  , _threadToken :: Maybe QCCM.SymToken -- AssetClass
+  , _threadToken :: Maybe QCCM.SymToken
   , _txIn :: Maybe QCCM.SymTxIn
   , _phase :: Phase
   , _label :: Label
@@ -258,12 +267,6 @@ options =
 
 genWallet :: QC.Gen Wallet
 genWallet = QC.elements testWallets
-
-genTT :: QC.Gen AssetClass
-genTT = QC.elements [tt]
-
-beginningOfTime :: Integer
-beginningOfTime = 1596059091000
 
 instance ContractModel AccountSimModel where
   data Action AccountSimModel
@@ -288,7 +291,7 @@ instance ContractModel AccountSimModel where
   nextState a = void $ case a of
     Start w -> do
       phase .= Running
-      actualValue .= (Ada.toValue 3000000) -- Ledger.minAdaTxOutEstimated)
+      actualValue .= (Ada.toValue 3000000)
       withdraw (walletAddress w) (Ada.toValue 3000000)
       symToken <- QCCM.createToken "thread token"
       threadToken .= Just symToken
@@ -298,7 +301,7 @@ instance ContractModel AccountSimModel where
       wait 1
     Open w -> do
       label' <- viewContractState label
-      label .= insert w (Ada.toValue 0) label' -- emptyValue
+      label .= insert w (Ada.toValue 0) label'
       wait 1
     Close w -> do
       label' <- viewContractState label
@@ -327,18 +330,11 @@ instance ContractModel AccountSimModel where
     Cleanup w -> do
       phase .= Initial
       actualValue' <- viewContractState actualValue
-      deposit (walletAddress w) (actualValue') -- <> (fromJust (viewContractState threadToken)))
+      deposit (walletAddress w) (actualValue')
       actualValue .= mempty
       threadToken .= Nothing
       wait 1
 
-  {-
-   _actualValue = mempty
-        , _threadToken = Nothing
-        , _txIn = Nothing
-        , _phase = Initial
-        , _label = []
-  -}
   precondition s a = case a of
     Start w -> currentPhase == Initial
     Open w -> currentPhase == Running && not (elem w accounts)
@@ -352,7 +348,6 @@ instance ContractModel AccountSimModel where
       accMap = s ^. contractState . label
       accounts = map fst accMap
 
-  -- enable again later
   validFailingAction _ _ = False
 
   arbitraryAction s =
@@ -451,39 +446,7 @@ act = \case
         tt
         tin
 
-toAssetId :: AssetClass -> API.AssetId
-toAssetId (AssetClass (sym, tok))
-  | sym == Ada.adaSymbol, tok == Ada.adaToken = API.AdaAssetId
-  | otherwise = API.AssetId (toPolicyId sym) (toAssetName tok)
-
-toPolicyId :: CurrencySymbol -> API.PolicyId
-toPolicyId sym@(CurrencySymbol bs) =
-  either
-    (error . show)
-    API.PolicyId
-    (API.deserialiseFromRawBytes API.AsScriptHash (Builtins.fromBuiltin bs))
-
-{-
-  | Just hash <- API.deserialiseFromRawBytes API.AsScriptHash
-                                                    (Builtins.fromBuiltin bs) = API.PolicyId hash
-  | otherwise = error $ "Bad policy id: " ++ show sym-}
-
-toAssetName :: TokenName -> API.AssetName
-toAssetName (TokenName bs) = API.AssetName $ Builtins.fromBuiltin bs
-
-fromAssetId :: API.AssetId -> AssetClass
-fromAssetId API.AdaAssetId = AssetClass (Ada.adaSymbol, Ada.adaToken)
-fromAssetId (API.AssetId policy name) = AssetClass (fromPolicyId policy, fromAssetName name)
-
-fromPolicyId :: API.PolicyId -> CurrencySymbol
-fromPolicyId (API.PolicyId hash) = CurrencySymbol . Builtins.toBuiltin $ API.serialiseToRawBytes hash
-
-fromAssetName :: API.AssetName -> TokenName
-fromAssetName (API.AssetName bs) = TokenName $ Builtins.toBuiltin bs
-
 instance RunModel AccountSimModel E.EmulatorM where
-  --  perform _ cmd _ = lift $ act cmd
-
   perform s (Start w) translate = do
     (oref, tin) <- lift $ API.start (walletAddress w) (walletPrivateKey w)
     QCCM.registerToken "thread token" (toAssetId (makeTT oref))
@@ -537,37 +500,27 @@ instance RunModel AccountSimModel E.EmulatorM where
         ttref
         tinref
 
-currC :: Value.PolicyId
-currC = PolicyId{unPolicyId = "c7c9864fcc779b5573d97e3beefe5dd3705bbfe41972acd9bb6ebe9e"}
-
-tnC :: Value.AssetName
-tnC = AssetName "OtherToken"
+------------------------------------------------------------------------------------------------------------------------------
+-- Tests
+------------------------------------------------------------------------------------------------------------------------------
 
 defInitialDist :: Map Ledger.CardanoAddress Value.Value
 defInitialDist =
   Map.fromList $
-    (,( Value.lovelaceValueOf 99999900000000000
-    --       <> Value.singleton currC tnC 1
-      ))
+    (,(Value.lovelaceValueOf 99999900000000000))
       <$> E.knownAddresses
 
 prop_AccountSim :: Actions AccountSimModel -> Property
 prop_AccountSim = E.propRunActionsWithOptions options
 
-simpleVestTest :: DL AccountSimModel ()
-simpleVestTest = do
+simpleFailTest :: DL AccountSimModel ()
+simpleFailTest = do
   action $ Start 1
   action $ Open 2
   action $ Close 3
 
 prop_Check :: Property
-prop_Check = forAllDL simpleVestTest prop_AccountSim
-
-prop_AccountSim_DoubleSatisfaction :: Actions AccountSimModel -> Property
-prop_AccountSim_DoubleSatisfaction = E.checkDoubleSatisfactionWithOptions options
-
--- minAda :: API.Value
--- minAda = (Value.adaValueOf -(Ada.getLovelace Ledger.minAdaTxOutEstimated))
+prop_Check = forAllDL simpleFailTest prop_AccountSim
 
 tests :: TestTree
 tests =
@@ -708,9 +661,31 @@ tests =
           act $ Open 3
           act $ Deposit 5 (Ada.adaValueOf 10)
           act $ Open 1
-    , testProperty "QuickCheck ContractModel" $ QC.withMaxSuccess 100 (prop_AccountSim) -- (QC.noShrinking prop_AccountSim)
+    , checkPredicateOptions
+        options
+        "can start and cleanup"
+        ( hasValidatedTransactionCountOfTotal 2 2
+            .&&. walletFundsChange (walletAddress w1) mempty
+        )
+        $ do
+          act $ Start 1
+          act $ Cleanup 1
+    , checkPredicateOptions
+        options
+        "can open, deposit, withdraw, close, cleanup"
+        ( hasValidatedTransactionCountOfTotal 6 6
+            .&&. walletFundsChange (walletAddress w1) mempty
+            .&&. walletFundsChange (walletAddress w5) mempty
+        )
+        $ do
+          act $ Start 1
+          act $ Open 5
+          act $ Deposit 5 (Ada.adaValueOf 10)
+          act $ Withdraw 5 (Ada.adaValueOf 10)
+          act $ Close 5
+          act $ Cleanup 1
+    , testProperty "QuickCheck ContractModel" $ QC.withMaxSuccess 100 (prop_AccountSim)
     , testProperty "QuickCheck CancelDL" (QC.expectFailure prop_Check)
-    --  , testProperty "QuickCheck double satisfaction" $ prop_AccountSim_DoubleSatisfaction
     ]
 
 checkPropAccountSimWithCoverage :: IO ()
