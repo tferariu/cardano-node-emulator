@@ -43,11 +43,6 @@ import Control.Monad.Except (catchError, throwError)
 import Control.Monad.RWS.Class (asks)
 import Data.Map qualified as Map
 import Data.Maybe (fromJust)
-
--- (Value, geq, lt)
-
--- (OutputDatum (OutputDatum))
-
 import Debug.Trace
 import Ledger (
   POSIXTime,
@@ -174,24 +169,27 @@ mkStartTx
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex, TxOutRef, C.TxIn)
 mkStartTx wallet = do
   slotConfig <- asks pSlotConfig
-  unspentOutputs <- E.utxosAt wallet
+  -- get the unspent outputs of the wallet submitting the transaction
   uO <- E.utxosAtPlutus wallet
 
+  -- get the output reference and TxIn for the UTxO being spent from the wallet
+  -- we take the largest so that we have enough ada to pay for fees/collateral
   let oref = fst (Map.foldrWithKey getLargest ((head (Map.keys uO)), (head (Map.elems uO))) uO)
       tin = toTxIn oref
-      utxos = Map.toList (C.unUTxO unspentOutputs)
 
-  when (length (utxos) == 0) $
+  -- throw an error if there are no utxos to be spent
+  when (length (uO) == 0) $
     throwError $
       E.CustomError $
         "no UTxOs"
 
-  let utxo = head utxos
-      tn = "ThreadToken"
+  -- create the Thread Token
+  let tn = "ThreadToken"
       an = "ThreadToken"
       cs = curSymbol oref tn
       tt = assetClass cs tn
 
+  -- make the smart contract output
   let smAddress = mkAddress
       txOut =
         C.TxOut
@@ -199,22 +197,24 @@ mkStartTx wallet = do
           (toTxOutValue (minValue <> assetClassValue tt 1))
           (toTxOutInlineDatum @Label (tt, []))
           C.ReferenceScriptNone
-      validityRange = toValidityRange slotConfig $ Interval.always
 
-  let mintValue = threadTokenValue oref tn an
+  -- other transaction components
+  let validityRange = toValidityRange slotConfig $ Interval.always
       redeemer = Redeemer (toBuiltinData ())
 
-  let mintWitness =
+  -- mint the token
+  let mintValue = threadTokenValue oref tn an
+      mintWitness =
         either (error . show) id $
           C.toCardanoMintWitness redeemer Nothing (Just (versionedPolicy oref tn))
-
-  let txMintValue =
+      txMintValue =
         C.TxMintValue
           C.MaryEraOnwardsConway
           (mintValue)
           (C.BuildTxWith (Map.singleton (getPid oref tn) mintWitness))
 
-      utx =
+  -- make the transaction body
+  let utx =
         E.emptyTxBodyContent
           { C.txOuts = [txOut]
           , C.txMintValue = txMintValue
@@ -251,6 +251,8 @@ mkOpenTx wallet tt = do
   unspentOutputs <- E.utxosAt smAddress
   slotConfig <- asks pSlotConfig
   current <- fst <$> E.currentTimeRange
+
+  -- find the smart contract with the specified thread token
   let
     validUnspentOutputs =
       Map.filter
@@ -263,6 +265,7 @@ mkOpenTx wallet tt = do
         )
         $ C.unUTxO unspentOutputs
 
+  -- error code if we do not find no contract or more than one
   when (length (validUnspentOutputs) == 0) $
     throwError $
       E.CustomError $
@@ -272,9 +275,11 @@ mkOpenTx wallet tt = do
       E.CustomError $
         "found too many SM"
 
+  -- create the various components of the transaction and put them together
   let
     remainingValue = C.fromCardanoValue (foldMap Ledger.cardanoTxOutValue validUnspentOutputs)
     extraKeyWit = either (error . show) id $ C.toCardanoPaymentKeyHash pkh
+    -- get the old datum and make the new one from it
     datums = map (cardanoTxOutDatum @Label) (Map.elems validUnspentOutputs)
     datum = case datums of
       (Just (tt', label)) : _ -> (tt', (insert (unPaymentPubKeyHash pkh) emptyValue label))
@@ -432,6 +437,7 @@ mkWithdrawTx wallet val tt = do
             Nothing -> (tt, [])
         )
       otherwise -> (tt, [])
+    -- since this transaction is not just internal we need to adjust the value
     remainingOutputs =
       [ C.TxOut
           smAddress
@@ -516,6 +522,7 @@ mkDepositTx wallet val tt = do
             Nothing -> (tt, [])
         )
       otherwise -> (tt, [])
+    -- same as Withdraw but we add value instead of subtracting it
     remainingOutputs =
       [ C.TxOut
           smAddress
@@ -697,6 +704,7 @@ mkCleanupTx tt tin = do
           witnessHeader C.InlineScriptDatum redeemer C.zeroExecutionUnits
     txIns = (,witness) <$> Map.keys validUnspentOutputs
 
+  -- spend the contract without perpetuating it and burn the thread token
   let
     tn = "ThreadToken"
     an = "ThreadToken"
@@ -729,6 +737,6 @@ cleanup
   -> C.TxIn
   -> m TxSuccess
 cleanup wallet privateKey tt tin = do
-  E.logInfo @String "Closing"
+  E.logInfo @String "Cleanup"
   (utx, utxoIndex) <- mkCleanupTx tt tin
   TxSuccess . getCardanoTxId <$> E.submitTxConfirmed utxoIndex wallet [toWitness privateKey] utx

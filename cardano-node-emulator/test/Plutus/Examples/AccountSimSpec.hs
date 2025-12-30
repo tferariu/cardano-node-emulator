@@ -246,6 +246,7 @@ lookupEmpty w [] = False
 lookupEmpty w ((x, y) : xs) =
   if w == x then y == (Ada.toValue 0) else lookupEmpty w xs
 
+-- test model
 data AccountSimModel = AccountSimModel
   { _actualValue :: Value
   , _threadToken :: Maybe QCCM.SymToken
@@ -268,6 +269,7 @@ options =
 genWallet :: QC.Gen Wallet
 genWallet = QC.elements testWallets
 
+-- actions for the model
 instance ContractModel AccountSimModel where
   data Action AccountSimModel
     = Start Wallet
@@ -288,6 +290,7 @@ instance ContractModel AccountSimModel where
       , _label = []
       }
 
+  -- expected changes resulting from each action
   nextState a = void $ case a of
     Start w -> do
       phase .= Running
@@ -335,6 +338,7 @@ instance ContractModel AccountSimModel where
       threadToken .= Nothing
       wait 1
 
+  -- when each action is possible
   precondition s a = case a of
     Start w -> currentPhase == Initial
     Open w -> currentPhase == Running && not (elem w accounts)
@@ -350,6 +354,7 @@ instance ContractModel AccountSimModel where
 
   validFailingAction _ _ = False
 
+  -- generator for actions
   arbitraryAction s =
     frequency
       [ (1, Start <$> genWallet)
@@ -397,6 +402,7 @@ instance ContractModel AccountSimModel where
                   <$> choose ((Ada.getLovelace Ledger.minAdaTxOutEstimated), max)
               )
 
+-- endpoint to run manual tests
 act :: Action AccountSimModel -> E.EmulatorM ()
 act = \case
   Start w ->
@@ -446,12 +452,15 @@ act = \case
         tt
         tin
 
+-- describes which model action corresponds with which API transaction being submitted
 instance RunModel AccountSimModel E.EmulatorM where
   perform s (Start w) translate = do
     (oref, tin) <- lift $ API.start (walletAddress w) (walletPrivateKey w)
+    -- using the Symbolic function of the model to register minting data
     QCCM.registerToken "thread token" (toAssetId (makeTT oref))
     QCCM.registerTxIn "minting input" (tin)
   perform s (Open w) translate = void $ do
+    -- extracting the thread token from the symbolic version in the model
     let ttref = fromAssetId (fromJust (translate <$> s ^. contractState . threadToken))
     lift $
       API.open
@@ -492,6 +501,7 @@ instance RunModel AccountSimModel E.EmulatorM where
         ttref
   perform s (Cleanup w) translate = void $ do
     let ttref = fromAssetId (fromJust (translate <$> s ^. contractState . threadToken))
+        -- extracting the TxIn from the symbolic version in the models
         tinref = fromJust (translate <$> s ^. contractState . txIn)
     lift $
       API.cleanup
@@ -510,9 +520,11 @@ defInitialDist =
     (,(Value.lovelaceValueOf 99999900000000000))
       <$> E.knownAddresses
 
+-- property for running the QuickCheck model
 prop_AccountSim :: Actions AccountSimModel -> Property
 prop_AccountSim = E.propRunActionsWithOptions options
 
+-- test we expect to fail
 simpleFailTest :: DL AccountSimModel ()
 simpleFailTest = do
   action $ Start 1
@@ -522,6 +534,7 @@ simpleFailTest = do
 prop_Check :: Property
 prop_Check = forAllDL simpleFailTest prop_AccountSim
 
+-- several manual tests followed by QuickCheck generated model tests
 tests :: TestTree
 tests =
   testGroup

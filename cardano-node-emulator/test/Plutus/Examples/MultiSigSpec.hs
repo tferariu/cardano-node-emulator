@@ -25,6 +25,19 @@ module Plutus.Examples.MultiSigSpec (
   checkPropMultiSigWithCoverage,
 ) where
 
+import Cardano.Api (
+  AddressInEra (AddressInEra),
+  AllegraEraOnwards (AllegraEraOnwardsConway),
+  AssetName (..),
+  IsShelleyBasedEra (shelleyBasedEra),
+  PolicyId (..),
+  TxOut (TxOut),
+  TxValidityLowerBound (TxValidityLowerBound, TxValidityNoLowerBound),
+  TxValidityUpperBound (TxValidityUpperBound),
+  UTxO (unUTxO),
+  toAddressAny,
+ )
+import Cardano.Api qualified as API
 import Cardano.Api.Shelley (toPlutusData)
 import Cardano.Node.Emulator qualified as E
 import Cardano.Node.Emulator.Internal.Node.Params qualified as Params
@@ -49,6 +62,7 @@ import Data.Foldable (Foldable (fold, length, null), sequence_)
 import Data.Map (Map)
 import Data.Map qualified as Map
 import Data.Maybe (fromJust)
+import Debug.Trace
 import GHC.Generics (Generic)
 import Ledger (
   POSIXTime,
@@ -86,24 +100,9 @@ import Plutus.Script.Utils.Value (
  )
 import PlutusLedgerApi.V1.Time (POSIXTime)
 import PlutusTx (fromData)
+import PlutusTx.Builtins qualified as Builtins
 import PlutusTx.Monoid (inv)
 import PlutusTx.Prelude qualified as PlutusTx
-
-import Cardano.Api (
-  AddressInEra (AddressInEra),
-  AllegraEraOnwards (AllegraEraOnwardsConway),
-  AssetName (..),
-  IsShelleyBasedEra (shelleyBasedEra),
-  PolicyId (..),
-  TxOut (TxOut),
-  TxValidityLowerBound (TxValidityLowerBound, TxValidityNoLowerBound),
-  TxValidityUpperBound (TxValidityUpperBound),
-  UTxO (unUTxO),
-  toAddressAny,
- )
-import Cardano.Api qualified as API
-import Debug.Trace
-import PlutusTx.Builtins qualified as Builtins
 import Test.QuickCheck qualified as QC hiding ((.&&.))
 import Test.QuickCheck.ContractModel (
   Action,
@@ -194,19 +193,19 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "16bb488ea35b8741fe56f5c1abea2caa32a2a2ff0e8a695b34bb2caf"
+curr = "815d601333ae4d4e67510a10e053c2b62f8763161749f12b4bf92597"
 
 tn' :: TokenName
 tn' = "ThreadToken"
 
 curr' :: CurrencySymbol
-curr' = "5e30874bfcf9c89a5378d6bedccb3c7592b1e5b16c959be06c251cec"
+curr' = "c4063aef9aac5f98647716727f44ff9181a65004a98fe6bbbba1b4f6"
 
 tin :: API.TxIn
 tin = API.TxIn "b0de2873afe95a6530bf1ae88096cf43e17bb2ee669f9ba600838949ac1e08ec" (API.TxIx 5)
 
 tin' :: API.TxIn
-tin' = API.TxIn "a8bbf3c00719fca852c087aa7c2cae9023cb0f66d8492536fcbddeb2007ae7a0" (API.TxIx 1)
+tin' = API.TxIn "8d3e7d0623eadc6b861a5d6ac76ed793b3b965506b6c6f32469f756b8e4e28f6" (API.TxIx 1)
 
 -- Debug Switches
 ok :: Bool
@@ -421,57 +420,7 @@ instance ContractModel MultiSigModel where
       time = TimeSlot.slotToEndPOSIXTime def slot
       timeInt = Ledger.getPOSIXTime time
 
-act' :: Action MultiSigModel -> AssetClass -> E.EmulatorM ()
-act' a tok = case a of
-  Propose w1 v w2 d ->
-    void $
-      propose
-        (walletAddress w1)
-        (walletPrivateKey w1)
-        modelParams
-        v
-        (walletPaymentPubKeyHash w2)
-        d
-        tok
-  Add w ->
-    void $
-      add
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        tok
-  Pay w ->
-    void $
-      pay
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        tok
-  Cancel w ->
-    void $
-      cancel
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        tok
-  Start w v ->
-    void $
-      start
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        v
-        ok
-  Close w ->
-    void $
-      close
-        (walletAddress w)
-        (walletPrivateKey w)
-        modelParams
-        tok
-        tin'
-        ok'
-
+-- for the first/only smart contract instance, baking in the thread token is fine
 act :: Action MultiSigModel -> E.EmulatorM ()
 act = \case
   Propose w1 v w2 d ->
@@ -522,6 +471,58 @@ act = \case
         tt
         tin
         False
+
+-- For multiple instances we need to specify the thread token of the current contract being used.
+act' :: Action MultiSigModel -> AssetClass -> E.EmulatorM ()
+act' a tok = case a of
+  Propose w1 v w2 d ->
+    void $
+      propose
+        (walletAddress w1)
+        (walletPrivateKey w1)
+        modelParams
+        v
+        (walletPaymentPubKeyHash w2)
+        d
+        tok
+  Add w ->
+    void $
+      add
+        (walletAddress w)
+        (walletPrivateKey w)
+        modelParams
+        tok
+  Pay w ->
+    void $
+      pay
+        (walletAddress w)
+        (walletPrivateKey w)
+        modelParams
+        tok
+  Cancel w ->
+    void $
+      cancel
+        (walletAddress w)
+        (walletPrivateKey w)
+        modelParams
+        tok
+  Start w v ->
+    void $
+      start
+        (walletAddress w)
+        (walletPrivateKey w)
+        modelParams
+        v
+        ok
+  Close w ->
+    void $
+      close
+        (walletAddress w)
+        (walletPrivateKey w)
+        modelParams
+        tok
+        tin'
+        ok'
 
 instance RunModel MultiSigModel E.EmulatorM where
   perform s (Start w v) translate = do
@@ -726,7 +727,7 @@ tests =
           act $ Add 5
           act $ Pay 3
           act $ Close 4
-          act' (Start 1 (Ada.adaValueOf 100)) tt
+          act' (Start 1 (Ada.adaValueOf 100)) tt'
           act' (Propose 4 (Ada.adaValueOf 97) 2 12345) tt'
           act' (Add 4) tt'
           act' (Add 5) tt'

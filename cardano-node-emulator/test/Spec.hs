@@ -14,6 +14,7 @@ import Plutus.Examples.DExSpec qualified as DExSpec
 import Plutus.Examples.EscrowSpec qualified as EscrowSpec
 import Plutus.Examples.GameSpec qualified as GameSpec
 import Plutus.Examples.MultiSigSpec qualified as MultiSigSpec
+import Plutus.Examples.TemplateSpec qualified as TemplateSpec
 
 main :: IO ()
 main = defaultMain tests
@@ -26,7 +27,8 @@ tests =
       -- , MTLSpec.tests
       -- , GameSpec.tests
       -- , EscrowSpec.tests
-      DExSpec.tests
+      TemplateSpec.tests
+    , DExSpec.tests
     , AccountSimSpec.tests
     , MultiSigSpec.tests
     ]

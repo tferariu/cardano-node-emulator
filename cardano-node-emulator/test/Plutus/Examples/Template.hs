@@ -15,21 +15,21 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:conservative-optimisation #-}
 
--- | A Multi-Signature Wallet contract in Plutus
-module Plutus.Examples.MultiSig (
-  MultiSig,
+-- | Template for validator and minting policy exported from agda2hs
+module Plutus.Examples.Template (
+  Template,
   Label (..),
   Params (..),
   smTypedValidator,
   mkAddress,
-  insert,
+  emptyValue,
+  minValue,
+  x2MinValue,
 
   -- * Exposed for test endpoints
   Input (..),
   Datum,
-  Natural,
   Info (..),
   agdaValidator,
   agdaPolicy,
@@ -42,9 +42,7 @@ module Plutus.Examples.MultiSig (
   -- * Coverage
   covIdx,
 
-  -- * testing
-  minValue,
-  x2MinValue,
+  -- * Testing
   writeUplc,
 ) where
 
@@ -99,10 +97,9 @@ import PlutusCore.Pretty qualified as PLC
 import PlutusCore.Test
 import PlutusCore.Version (plcVersion110)
 import PlutusIR.Core.Instance.Pretty.Readable
-import PlutusIR.Core.Type
 import PlutusIR.Core.Type (progTerm)
 import PlutusLedgerApi.V1.Address
-import PlutusLedgerApi.V1.Interval hiding (singleton)
+import PlutusLedgerApi.V1.Interval qualified as Interval
 import PlutusLedgerApi.V1.Value qualified as V
 import PlutusLedgerApi.V2.Tx hiding (TxId)
 import PlutusLedgerApi.V3 hiding (TxId)
@@ -128,63 +125,24 @@ import UntypedPlutusCore qualified as UPLC
 import UntypedPlutusCore.Evaluation.Machine.Cek qualified as UPLC
 import Prelude (IO, Show (..), String, writeFile)
 
--- Custom data types for the validator
+-- Custom types for the validator
 
-type Natural = Integer
+type Placeholder = Integer
 
-data Info
-  = Holding
-  | Collecting Value PubKeyHash Natural [PubKeyHash]
-  deriving (Show)
-
--- Inlineable instance of equality needs to be defined when it cannot be derived
-{-# INLINEABLE iEq #-}
-iEq :: Info -> Info -> Bool
-iEq Holding Holding = True
-iEq Holding (Collecting _ _ _ _) = False
-iEq (Collecting _ _ _ _) Holding = False
-iEq (Collecting v pkh d sigs) (Collecting v' pkh' d' sigs') = v == v' && pkh == pkh' && d == d' && sigs == sigs'
-
-instance Eq Info where
-  {-# INLINEABLE (==) #-}
-  b == c = iEq b c
+type Info = Placeholder
 
 type Label = (AssetClass, Info)
 
-data Input
-  = Propose Value PubKeyHash Natural
-  | Add PubKeyHash
-  | Pay
-  | Cancel
-  | Close
+data Input = Placeholder'
   deriving (Show)
 
-data Params = Params
-  { authSigs :: [PubKeyHash]
-  , nr :: Natural
-  , maxWait :: Natural
-  }
-  deriving (Show)
+data Params = Params {optional :: Placeholder}
 
 -- Necessary for template Haskell and compiling the validator
-PlutusTx.unstableMakeIsData ''Info
-PlutusTx.makeLift ''Info
 PlutusTx.unstableMakeIsData ''Input
 PlutusTx.makeLift ''Input
 PlutusTx.unstableMakeIsData ''Params
 PlutusTx.makeLift ''Params
-
--- Helper functions for processing the list of signatories.
-{-# INLINEABLE query #-}
-query :: PubKeyHash -> [PubKeyHash] -> Bool
-query pkh [] = False
-query pkh (x : l') = x == pkh || query pkh l'
-
-{-# INLINEABLE insert #-}
-insert :: PubKeyHash -> [PubKeyHash] -> [PubKeyHash]
-insert pkh [] = [pkh]
-insert pkh (x : l') =
-  if pkh == x then x : l' else x : insert pkh l'
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- Generic helper functions that get compiled as part of the validator
@@ -231,6 +189,21 @@ continuing ctx = case getContinuingOutputs ctx of
   [o] -> True
   _ -> False
 
+{-# INLINEABLE getPayment #-}
+getPayment :: PubKeyHash -> ScriptContext -> Value
+getPayment pkh ctx = case filter
+  (\i -> (txOutAddress i == (pubKeyHashAddress pkh)))
+  (txInfoOutputs (scriptContextTxInfo ctx)) of
+  [o] -> txOutValue o
+  _ -> error ()
+
+{-# INLINEABLE checkPayment #-}
+checkPayment :: PubKeyHash -> Value -> ScriptContext -> Bool
+checkPayment pkh v ctx = case filter
+  (\i -> (txOutAddress i == (pubKeyHashAddress pkh)))
+  (txInfoOutputs (scriptContextTxInfo ctx)) of
+  os -> any (\o -> txOutValue o == v) os
+
 {-# INLINEABLE getVal #-}
 getVal :: TxOut -> AssetClass -> Integer
 getVal ip ac = assetClassValueOf (txOutValue ip) ac
@@ -250,10 +223,6 @@ x2MinValue = lovelaceValue (Ada.getLovelace 6000000)
 {-# INLINEABLE emptyValue #-}
 emptyValue :: Value
 emptyValue = lovelaceValue (Ada.getLovelace 0)
-
-{-# INLINEABLE lovelaces #-}
-lovelaces :: Value -> Integer
-lovelaces v = assetClassValueOf v (AssetClass (adaSymbol, adaToken))
 
 {-# INLINEABLE checkSigned #-}
 checkSigned :: PubKeyHash -> ScriptContext -> Bool
@@ -283,135 +252,32 @@ validRange :: ScriptContext -> Interval POSIXTime
 validRange ctx = txInfoValidRange (scriptContextTxInfo ctx)
 
 ------------------------------------------------------------------------------------------------------------------------------
--- Contract specific helper functions that get compiled as part of the validator
+-- Contract-specific helper functions that get compiled as part of the validator
 ------------------------------------------------------------------------------------------------------------------------------
-
-{-# INLINEABLE expired #-}
-expired :: Natural -> ScriptContext -> Bool
-expired d ctx = before ((POSIXTime{getPOSIXTime = d})) (validRange ctx)
-
-{-# INLINEABLE notTooLate #-}
-notTooLate :: Params -> Natural -> ScriptContext -> Bool
-notTooLate par d ctx =
-  before
-    ((POSIXTime{getPOSIXTime = (d - maxWait par)}))
-    (validRange ctx)
-
-{-# INLINEABLE checkPayment #-}
-checkPayment :: PubKeyHash -> Value -> ScriptContext -> Bool
-checkPayment pkh v ctx = case filter
-  (\i -> (txOutAddress i == (pubKeyHashAddress pkh)))
-  (txInfoOutputs (scriptContextTxInfo ctx)) of
-  os -> any (\o -> txOutValue o == v) os
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- The Validator
 ------------------------------------------------------------------------------------------------------------------------------
 
 -- Declaring the type of the validator
-data MultiSig
-instance Scripts.ValidatorTypes MultiSig where
-  type RedeemerType MultiSig = Input
-  type DatumType MultiSig = Label
+data Template
+instance Scripts.ValidatorTypes Template where
+  type RedeemerType Template = Input
+  type DatumType Template = Label
 
 {-# INLINEABLE agdaValidator #-}
 agdaValidator :: Params -> Label -> Input -> ScriptContext -> Bool
-agdaValidator param (tok, lab) red ctx =
-  checkTokenIn tok ctx
-    && case (checkTokenOut tok ctx, lab, red) of
-      (True, Holding, Propose v pkh d) ->
-        newValue ctx
-          == oldValue ctx
-          && geq (oldValue ctx) v
-          && lovelaces v
-          >= lovelaces minValue
-          && notTooLate param d ctx
-          && continuing ctx
-          && case newDatum ctx of
-            (tok', Holding) -> False
-            ( tok'
-              , Collecting v' pkh' d' sigs'
-              ) ->
-                v
-                  == v'
-                  && pkh
-                  == pkh'
-                  && d
-                  == d'
-                  && sigs'
-                  == []
-                  && tok
-                  == tok'
-      (True, Collecting v pkh d sigs, Add sig) ->
-        newValue ctx
-          == oldValue ctx
-          && checkSigned sig ctx
-          && query sig (authSigs param)
-          && continuing ctx
-          && case newDatum ctx of
-            (tok', Holding) -> False
-            ( tok'
-              , Collecting
-                  v'
-                  pkh'
-                  d'
-                  sigs'
-              ) ->
-                v
-                  == v'
-                  && pkh
-                  == pkh'
-                  && d
-                  == d'
-                  && sigs'
-                  == insert
-                    sig
-                    sigs
-                  && tok
-                  == tok'
-      (True, Collecting v pkh d sigs, Pay) ->
-        length sigs
-          >= nr param
-          && continuing ctx
-          && case newDatum ctx of
-            (tok', Holding) ->
-              checkPayment pkh v ctx
-                && oldValue ctx
-                == newValue ctx
-                + v
-                && tok
-                == tok'
-            ( tok'
-              , Collecting v' pkh' d' sigs'
-              ) -> False
-      (True, Collecting v pkh d sigs, Cancel) ->
-        newValue ctx
-          == oldValue ctx
-          && continuing ctx
-          && case newDatum ctx of
-            (tok', Holding) ->
-              expired d ctx
-                && tok
-                == tok'
-            ( tok'
-              , Collecting v' pkh' d' sigs'
-              ) -> False
-      (False, Holding, Close) ->
-        lovelaces x2MinValue
-          > lovelaces (oldValue ctx)
-          && not (continuing ctx)
-          && checkTokenBurned tok ctx
-      _ -> False
+agdaValidator param (tok, lab) red ctx = True
 
 ------------------------------------------------------------------------------------------------------------------------------
--- Compiling the Validator
+-- Compiling the validator
 ------------------------------------------------------------------------------------------------------------------------------
 
-smTypedValidator :: Params -> V3.TypedValidator MultiSig
+smTypedValidator :: Params -> V3.TypedValidator Template
 smTypedValidator = go
   where
     go =
-      V3.mkTypedValidatorParam @MultiSig
+      V3.mkTypedValidatorParam @Template
         $$(PlutusTx.compile [||agdaValidator||])
         $$(PlutusTx.compile [||wrap||])
     wrap = Scripts.mkUntypedValidator
@@ -467,88 +333,47 @@ newDatumAddr addr ctx = case txOutDatum (outputAtAddr addr ctx) of
     Just d -> d
   OutputDatum dat -> PlutusTx.unsafeFromBuiltinData @Label (getDatum dat)
 
-{-# INLINEABLE newValueAddr #-}
-newValueAddr :: Address -> ScriptContext -> Value
-newValueAddr addr ctx = txOutValue (outputAtAddr addr ctx)
-
 ------------------------------------------------------------------------------------------------------------------------------
--- Thread Token specific functions that get compiled as part of the Minting Policy Script
+-- Thread Token functions that get compiled as part of the Minting Policy Script
 ------------------------------------------------------------------------------------------------------------------------------
 
 {-# INLINEABLE checkDatum #-}
 checkDatum :: Address -> TokenName -> ScriptContext -> Bool
 checkDatum addr tn ctx =
   case newDatumAddr addr ctx of
-    (tok, Holding) -> ownAssetClass tn ctx == tok
-    (tok, Collecting _ _ _ _) -> False
+    (tok, label) -> True
 
 {-# INLINEABLE checkValue #-}
 checkValue :: Address -> TokenName -> ScriptContext -> Bool
 checkValue addr tn ctx =
-  lovelaces x2MinValue
-    < lovelaces (newValueAddr addr ctx)
-    && checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
-
-{-# INLINEABLE notIn #-}
-notIn :: PubKeyHash -> [PubKeyHash] -> Bool
-notIn x [] = True
-notIn x (y : ys) = if x == y then False else notIn x ys
-
-{-# INLINEABLE noDups #-}
-noDups :: [PubKeyHash] -> Bool
-noDups [] = True
-noDups (x : xs) = notIn x xs && noDups xs
-
-{-# INLINEABLE checkParams #-}
-checkParams :: Params -> Bool
-checkParams (Params authSigs nr maxWait) =
-  noDups authSigs && length authSigs >= nr && maxWait > 0
+  checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
 
 {-# INLINEABLE isInitial #-}
-isInitial
-  :: Params -> Address -> TxOutRef -> TokenName -> ScriptContext -> Bool
-isInitial par addr oref tn ctx =
-  consumes oref ctx
-    && checkDatum addr tn ctx
-    && checkValue addr tn ctx
-    && checkParams par
-
--- Thread Token
-{-# INLINEABLE agdaPolicy #-}
-agdaPolicy
-  :: Params
-  -> Address
-  -> TxOutRef
-  -> TokenName
-  -> ()
-  -> ScriptContext
-  -> Bool
-agdaPolicy par addr oref tn _ ctx =
-  if amt == 1
-    then continuingAddr addr ctx && isInitial par addr oref tn ctx
-    else if amt == (-1) then not (continuingAddr addr ctx) else False
-  where
-    amt :: Integer
-    amt = getMintedAmount ctx
+isInitial :: Address -> TxOutRef -> TokenName -> ScriptContext -> Bool
+isInitial addr oref tn ctx = consumes oref ctx && checkValue addr tn ctx && checkDatum addr tn ctx
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- The Minting Policy Script
+------------------------------------------------------------------------------------------------------------------------------
+
+{-# INLINEABLE agdaPolicy #-}
+agdaPolicy
+  :: Address -> TxOutRef -> TokenName -> () -> ScriptContext -> Bool
+agdaPolicy addr oref tn _ ctx = True
+
+------------------------------------------------------------------------------------------------------------------------------
+-- Compiling the Minting Policy Script
 ------------------------------------------------------------------------------------------------------------------------------
 
 policy :: Params -> TxOutRef -> TokenName -> V3.MintingPolicy
 policy p oref tn =
   Ledger.mkMintingPolicyScript
     $ $$( PlutusTx.compile
-            [||\par' addr' oref' tn' -> Scripts.mkUntypedMintingPolicy $ agdaPolicy par' addr' oref' tn'||]
+            [||\addr' oref' tn' -> Scripts.mkUntypedMintingPolicy $ agdaPolicy addr' oref' tn'||]
         )
-    `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 p
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 (mkOtherAddress p)
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 oref
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 tn
-
-------------------------------------------------------------------------------------------------------------------------------
--- Compiling the Minting Policy Script
-------------------------------------------------------------------------------------------------------------------------------
 
 versionedPolicy :: Params -> TxOutRef -> TokenName -> Scripts.Versioned V3.MintingPolicy
 versionedPolicy p oref tn = (Ledger.Versioned (policy p oref tn) Ledger.PlutusV3)
@@ -585,13 +410,13 @@ serialisedNP :: C.PlutusScript C.PlutusScriptV3
 serialisedNP = C.PlutusScriptSerialised test
 
 writeCcode :: IO ()
-writeCcode = void $ C.writeFileTextEnvelope "ccodeMultiSig.plutus" Nothing serialisedNP
+writeCcode = void $ C.writeFileTextEnvelope "ccodeTemplate.plutus" Nothing serialisedNP
 
 printPir :: PlutusTx.CompiledCode a -> Doc b
 printPir c = (prettyPirReadable (view progTerm (fromJust (getPirNoAnn c))))
 
 writePir :: IO ()
-writePir = writeFile "pirMultiSig.txt" (show (printPir ccode))
+writePir = writeFile "pirTemplate.txt" (show (printPir ccode))
 
 writeUplc :: IO ()
-writeUplc = writeFile "uplcMultiSig.txt" (show (getPlcNoAnn ccode {--}))
+writeUplc = writeFile "uplcTemplate.txt" (show (getPlcNoAnn ccode))

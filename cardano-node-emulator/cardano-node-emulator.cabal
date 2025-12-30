@@ -129,6 +129,9 @@ test-suite cardano-node-emulator-test
     Plutus.Examples.MultiSig
     Plutus.Examples.MultiSigAPI
     Plutus.Examples.MultiSigSpec
+    Plutus.Examples.Template
+    Plutus.Examples.TemplateAPI
+    Plutus.Examples.TemplateSpec
 
   --  Plutus.CIP1694.Scripts
   --  Plutus.CIP1694.Test

@@ -43,9 +43,6 @@ import Control.Monad.Except (catchError, throwError)
 import Control.Monad.RWS.Class (asks)
 import Data.Map qualified as Map
 import Data.Maybe (fromJust)
-
--- (Value, geq, lt)
-
 import Debug.Trace
 import Ledger (
   POSIXTime,

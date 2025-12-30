@@ -8,7 +8,14 @@ image:https://img.shields.io/badge/policy-Cardano%20Engineering%20Handbook-infor
 
 == Introduction
 
-TODO
+To check the tests of example smart contracts
+```
+nix develop
+cabal build all
+cabal run cardano-node-emulator-test
+```
+
+The rest of this README is as seen on the original repo I forked from
 
 [[Architecture]]
 == Architecture

@@ -111,18 +111,6 @@ toValidityRange
 toValidityRange slotConfig =
   either (error . show) id . C.toCardanoValidityRange . posixTimeRangeToContainedSlotRange slotConfig
 
-alwaysSucceedPolicy :: V3.MintingPolicy
-alwaysSucceedPolicy =
-  Ledger.MintingPolicy (C.fromCardanoPlutusScript $ C.examplePlutusScriptAlwaysSucceeds C.WitCtxMint)
-
-alwaysSucceedPolicyId :: C.PolicyId
-alwaysSucceedPolicyId =
-  C.scriptPolicyId
-    (C.PlutusScript C.PlutusScriptV1 $ C.examplePlutusScriptAlwaysSucceeds C.WitCtxMint)
-
-someTokenValue :: C.AssetName -> Integer -> C.Value
-someTokenValue an i = C.valueFromList [(C.AssetId alwaysSucceedPolicyId an, C.Quantity i)]
-
 threadTokenValue :: Params -> TxOutRef -> TokenName -> C.AssetName -> C.Value
 threadTokenValue p oref tn an = C.valueFromList [(C.AssetId (getPid p oref tn) an, C.Quantity 1)]
 
