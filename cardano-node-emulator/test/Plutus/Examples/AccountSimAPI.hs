@@ -72,7 +72,8 @@ import PlutusLedgerApi.V1.Address
 import PlutusLedgerApi.V1.Interval qualified as Interval
 import PlutusLedgerApi.V1.Value qualified as V
 import PlutusLedgerApi.V2.Tx hiding (TxId)
-import PlutusLedgerApi.V3 hiding (TxId)
+import PlutusLedgerApi.V3 hiding (Datum, Redeemer, TxId)
+import PlutusLedgerApi.V3 qualified as V3
 import PlutusLedgerApi.V3.Contexts hiding (TxId)
 import PlutusTx (ToData)
 import PlutusTx qualified
@@ -195,12 +196,12 @@ mkStartTx wallet = do
         C.TxOut
           smAddress
           (toTxOutValue (minValue <> assetClassValue tt 1))
-          (toTxOutInlineDatum @Label (tt, []))
+          (toTxOutInlineDatum @Datum (tt, []))
           C.ReferenceScriptNone
 
   -- other transaction components
   let validityRange = toValidityRange slotConfig $ Interval.always
-      redeemer = Redeemer (toBuiltinData ())
+      redeemer = V3.Redeemer (toBuiltinData ())
 
   -- mint the token
   let mintValue = threadTokenValue oref tn an
@@ -280,9 +281,9 @@ mkOpenTx wallet tt = do
     remainingValue = C.fromCardanoValue (foldMap Ledger.cardanoTxOutValue validUnspentOutputs)
     extraKeyWit = either (error . show) id $ C.toCardanoPaymentKeyHash pkh
     -- get the old datum and make the new one from it
-    datums = map (cardanoTxOutDatum @Label) (Map.elems validUnspentOutputs)
+    datums = map (cardanoTxOutDatum @Datum) (Map.elems validUnspentOutputs)
     datum = case datums of
-      (Just (tt', label)) : _ -> (tt', (insert (unPaymentPubKeyHash pkh) emptyValue label))
+      (Just (tt', accMap)) : _ -> (tt', (insert (unPaymentPubKeyHash pkh) emptyValue accMap))
       otherwise -> (tt, [])
     remainingOutputs =
       [C.TxOut smAddress (toTxOutValue remainingValue) (toTxOutInlineDatum datum) C.ReferenceScriptNone]
@@ -354,9 +355,9 @@ mkCloseTx wallet tt = do
   let
     remainingValue = C.fromCardanoValue (foldMap Ledger.cardanoTxOutValue validUnspentOutputs)
     extraKeyWit = either (error . show) id $ C.toCardanoPaymentKeyHash pkh
-    datums = map (cardanoTxOutDatum @Label) (Map.elems validUnspentOutputs)
+    datums = map (cardanoTxOutDatum @Datum) (Map.elems validUnspentOutputs)
     datum = case datums of
-      (Just (tt', label)) : _ -> (tt', (delete (unPaymentPubKeyHash pkh) label))
+      (Just (tt', accMap)) : _ -> (tt', (delete (unPaymentPubKeyHash pkh) accMap))
       otherwise -> (tt, [])
     remainingOutputs =
       [C.TxOut smAddress (toTxOutValue remainingValue) (toTxOutInlineDatum datum) C.ReferenceScriptNone]
@@ -429,11 +430,11 @@ mkWithdrawTx wallet val tt = do
   let
     remainingValue = C.fromCardanoValue (foldMap Ledger.cardanoTxOutValue validUnspentOutputs)
     extraKeyWit = either (error . show) id $ C.toCardanoPaymentKeyHash pkh
-    datums = map (cardanoTxOutDatum @Label) (Map.elems validUnspentOutputs)
+    datums = map (cardanoTxOutDatum @Datum) (Map.elems validUnspentOutputs)
     datum = case datums of
-      (Just (tt', label)) : _ ->
-        ( case (Plutus.Examples.AccountSim.lookup (unPaymentPubKeyHash pkh) label) of
-            Just v -> (tt', (insert (unPaymentPubKeyHash pkh) (v PlutusTx.- val) label))
+      (Just (tt', accMap)) : _ ->
+        ( case (Plutus.Examples.AccountSim.lookup (unPaymentPubKeyHash pkh) accMap) of
+            Just v -> (tt', (insert (unPaymentPubKeyHash pkh) (v PlutusTx.- val) accMap))
             Nothing -> (tt, [])
         )
       otherwise -> (tt, [])
@@ -514,11 +515,11 @@ mkDepositTx wallet val tt = do
   let
     remainingValue = C.fromCardanoValue (foldMap Ledger.cardanoTxOutValue validUnspentOutputs)
     extraKeyWit = either (error . show) id $ C.toCardanoPaymentKeyHash pkh
-    datums = map (cardanoTxOutDatum @Label) (Map.elems validUnspentOutputs)
+    datums = map (cardanoTxOutDatum @Datum) (Map.elems validUnspentOutputs)
     datum = case datums of
-      (Just (tt', label)) : _ ->
-        ( case (Plutus.Examples.AccountSim.lookup (unPaymentPubKeyHash pkh) label) of
-            Just v -> (tt', (insert (unPaymentPubKeyHash pkh) (v PlutusTx.+ val) label))
+      (Just (tt', accMap)) : _ ->
+        ( case (Plutus.Examples.AccountSim.lookup (unPaymentPubKeyHash pkh) accMap) of
+            Just v -> (tt', (insert (unPaymentPubKeyHash pkh) (v PlutusTx.+ val) accMap))
             Nothing -> (tt, [])
         )
       otherwise -> (tt, [])
@@ -603,14 +604,14 @@ mkTransferTx wallet wallet' val tt = do
   let
     remainingValue = C.fromCardanoValue (foldMap Ledger.cardanoTxOutValue validUnspentOutputs)
     extraKeyWit = either (error . show) id $ C.toCardanoPaymentKeyHash pkh
-    datums = map (cardanoTxOutDatum @Label) (Map.elems validUnspentOutputs)
-    (tt', label) = case datums of
-      (Just (tt', label)) : _ -> (tt', label)
+    datums = map (cardanoTxOutDatum @Datum) (Map.elems validUnspentOutputs)
+    (tt', accMap) = case datums of
+      (Just (tt', accMap)) : _ -> (tt', accMap)
       otherwise -> (tt, [])
-    vF = case (Plutus.Examples.AccountSim.lookup (unPaymentPubKeyHash pkh) label) of
+    vF = case (Plutus.Examples.AccountSim.lookup (unPaymentPubKeyHash pkh) accMap) of
       Just v -> v
       Nothing -> emptyValue
-    vT = case (Plutus.Examples.AccountSim.lookup (unPaymentPubKeyHash pkh') label) of
+    vT = case (Plutus.Examples.AccountSim.lookup (unPaymentPubKeyHash pkh') accMap) of
       Just v -> v
       Nothing -> emptyValue
     datum =
@@ -618,7 +619,7 @@ mkTransferTx wallet wallet' val tt = do
       , ( insert
             (unPaymentPubKeyHash pkh)
             (vF PlutusTx.- val)
-            (insert (unPaymentPubKeyHash pkh') (vT PlutusTx.+ val) label)
+            (insert (unPaymentPubKeyHash pkh') (vT PlutusTx.+ val) accMap)
         )
       )
     remainingOutputs =
@@ -712,7 +713,7 @@ mkCleanupTx tt tin = do
     mintValue = burnTokenValue oref tn an
     mintWitness =
       either (error . show) id $
-        C.toCardanoMintWitness (Redeemer (toBuiltinData ())) Nothing (Just (versionedPolicy oref tn))
+        C.toCardanoMintWitness (V3.Redeemer (toBuiltinData ())) Nothing (Just (versionedPolicy oref tn))
     txMintValue =
       C.TxMintValue
         C.MaryEraOnwardsConway

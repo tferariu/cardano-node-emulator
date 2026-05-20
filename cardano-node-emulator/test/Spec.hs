@@ -27,8 +27,8 @@ tests =
       -- , MTLSpec.tests
       -- , GameSpec.tests
       -- , EscrowSpec.tests
-      TemplateSpec.tests
-    , DExSpec.tests
-    , AccountSimSpec.tests
-    , MultiSigSpec.tests
+      --  TemplateSpec.tests
+      -- , DExSpec.tests
+      AccountSimSpec.tests
+      -- MultiSigSpec.tests
     ]

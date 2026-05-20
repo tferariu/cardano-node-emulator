@@ -67,7 +67,7 @@ import Ledger qualified
 import Ledger.Tx.CardanoAPI (fromCardanoSlotNo)
 import Ledger.Typed.Scripts qualified as Scripts
 import Ledger.Value.CardanoAPI qualified as Value
-import Plutus.Examples.AccountSim hiding (Input (..), Label (..), delete, insert, lookup)
+import Plutus.Examples.AccountSim hiding (Datum (..), Redeemer (..), delete, insert, lookup)
 import Plutus.Examples.AccountSim qualified as Impl
 import Plutus.Examples.AccountSimAPI qualified as API
 import Plutus.Script.Utils.Ada qualified as Ada
@@ -198,7 +198,7 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "aead14eda6ba1867cc85c2754ed4d8b7646db7955880685d0aa7182b"
+curr = "0718e4a99caf1d8033b55b6f97c848068100e989b4da81185e6899fb"
 
 tt :: AssetClass
 tt = assetClass curr tn

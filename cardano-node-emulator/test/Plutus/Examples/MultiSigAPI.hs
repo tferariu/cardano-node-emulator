@@ -250,7 +250,7 @@ mkProposeTx
   => Params
   -> Value
   -> PaymentPubKeyHash
-  -> Natural
+  -> Integer
   -> AssetClass
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex)
 mkProposeTx params val pkh d tt = do
@@ -313,7 +313,7 @@ propose
   -> Params
   -> Value
   -> PaymentPubKeyHash
-  -> Natural
+  -> Integer
   -> AssetClass
   -> m TxSuccess
 propose wallet privateKey params val pkh d tt = do

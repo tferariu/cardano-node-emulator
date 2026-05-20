@@ -29,7 +29,7 @@ module Plutus.Examples.MultiSig (
   -- * Exposed for test endpoints
   Input (..),
   Datum,
-  Natural,
+  -- Natural,
   Info (..),
   agdaValidator,
   agdaPolicy,
@@ -130,11 +130,9 @@ import Prelude (IO, Show (..), String, writeFile)
 
 -- Custom data types for the validator
 
-type Natural = Integer
-
 data Info
   = Holding
-  | Collecting Value PubKeyHash Natural [PubKeyHash]
+  | Collecting Value PubKeyHash Integer [PubKeyHash]
   deriving (Show)
 
 -- Inlineable instance of equality needs to be defined when it cannot be derived
@@ -152,7 +150,7 @@ instance Eq Info where
 type Label = (AssetClass, Info)
 
 data Input
-  = Propose Value PubKeyHash Natural
+  = Propose Value PubKeyHash Integer
   | Add PubKeyHash
   | Pay
   | Cancel
@@ -161,8 +159,8 @@ data Input
 
 data Params = Params
   { authSigs :: [PubKeyHash]
-  , nr :: Natural
-  , maxWait :: Natural
+  , nr :: Integer
+  , maxWait :: Integer
   }
   deriving (Show)
 
@@ -287,11 +285,11 @@ validRange ctx = txInfoValidRange (scriptContextTxInfo ctx)
 ------------------------------------------------------------------------------------------------------------------------------
 
 {-# INLINEABLE expired #-}
-expired :: Natural -> ScriptContext -> Bool
+expired :: Integer -> ScriptContext -> Bool
 expired d ctx = before ((POSIXTime{getPOSIXTime = d})) (validRange ctx)
 
 {-# INLINEABLE notTooLate #-}
-notTooLate :: Params -> Natural -> ScriptContext -> Bool
+notTooLate :: Params -> Integer -> ScriptContext -> Bool
 notTooLate par d ctx =
   before
     ((POSIXTime{getPOSIXTime = (d - maxWait par)}))

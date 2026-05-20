@@ -19,7 +19,7 @@
 -- | Simulating Accounts on UTxO using Plutus
 module Plutus.Examples.AccountSim (
   AccountSim,
-  Label (..),
+  Datum (..),
   smTypedValidator,
   mkAddress,
   insert,
@@ -29,7 +29,7 @@ module Plutus.Examples.AccountSim (
   minValue,
 
   -- * Exposed for test endpoints
-  Input (..),
+  Redeemer (..),
   Datum,
   AccMap (..),
   agdaValidator,
@@ -103,7 +103,8 @@ import PlutusLedgerApi.V1.Address
 import PlutusLedgerApi.V1.Interval qualified as Interval
 import PlutusLedgerApi.V1.Value qualified as V
 import PlutusLedgerApi.V2.Tx hiding (TxId)
-import PlutusLedgerApi.V3 hiding (TxId)
+import PlutusLedgerApi.V3 hiding (Datum, Redeemer, TxId)
+import PlutusLedgerApi.V3 qualified as V3
 import PlutusLedgerApi.V3.Contexts hiding (TxId)
 import PlutusTx (ToData)
 import PlutusTx qualified
@@ -130,9 +131,9 @@ import Prelude (IO, Show (..), String, writeFile)
 
 type AccMap = [(PubKeyHash, Value)]
 
-type Label = (AssetClass, AccMap)
+type Datum = (AssetClass, AccMap)
 
-data Input
+data Redeemer
   = Open PubKeyHash
   | Close PubKeyHash
   | Withdraw PubKeyHash Value
@@ -142,8 +143,8 @@ data Input
   deriving (Show)
 
 -- Necessary for template Haskell and compiling the validator
-PlutusTx.unstableMakeIsData ''Input
-PlutusTx.makeLift ''Input
+PlutusTx.unstableMakeIsData ''Redeemer
+PlutusTx.makeLift ''Redeemer
 
 -- Helper functions for manipulating Account maps.
 -- All functions that are part of the validator or minting policy must be inlineable for compilation
@@ -182,13 +183,13 @@ ownInput ctx = case findOwnInput ctx of
   Just i -> txInInfoResolved i
 
 {-# INLINEABLE smDatum #-}
-smDatum :: Maybe Datum -> Maybe Label
+smDatum :: Maybe V3.Datum -> Maybe Datum
 smDatum md = do
-  Datum d <- md
+  V3.Datum d <- md
   PlutusTx.fromBuiltinData d
 
 {-# INLINEABLE newDatum #-}
-newDatum :: ScriptContext -> Label
+newDatum :: ScriptContext -> Datum
 newDatum ctx = case txOutDatum (ownOutput ctx) of
   NoOutputDatum -> error ()
   OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
@@ -322,11 +323,11 @@ checkTransfer tok (Just vF) (Just vT) from to val lab ctx =
 -- Declaring the type of the validator
 data AccountSim
 instance Scripts.ValidatorTypes AccountSim where
-  type RedeemerType AccountSim = Input
-  type DatumType AccountSim = Label
+  type RedeemerType AccountSim = Redeemer
+  type DatumType AccountSim = Datum
 
 {-# INLINEABLE agdaValidator #-}
-agdaValidator :: Label -> Input -> ScriptContext -> Bool
+agdaValidator :: Datum -> Redeemer -> ScriptContext -> Bool
 agdaValidator (tok, lab) inp ctx =
   checkTokenIn tok ctx
     && case inp of
@@ -334,7 +335,7 @@ agdaValidator (tok, lab) inp ctx =
         checkTokenOut tok ctx
           && continuing ctx
           && checkSigned pkh ctx
-          && not (checkMembership (lookup pkh lab))
+          && not (isJust (lookup pkh lab))
           && newDatum ctx
           == (tok, insert pkh emptyValue lab)
           && newValue ctx
@@ -354,8 +355,8 @@ agdaValidator (tok, lab) inp ctx =
           && checkSigned pkh ctx
           && checkWithdraw tok (lookup pkh lab) pkh val lab ctx
           && newValue ctx
-          + val
           == oldValue ctx
+          - val
       Deposit pkh val ->
         checkTokenOut tok ctx
           && continuing ctx
@@ -441,13 +442,13 @@ continuingAddr addr ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfo
   _ -> True
 
 {-# INLINEABLE newDatumAddr #-}
-newDatumAddr :: Address -> ScriptContext -> Label
+newDatumAddr :: Address -> ScriptContext -> Datum
 newDatumAddr addr ctx = case txOutDatum (outputAtAddr addr ctx) of
   NoOutputDatum -> error ()
   OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
     Nothing -> error ()
     Just d -> d
-  OutputDatum dat -> PlutusTx.unsafeFromBuiltinData @Label (getDatum dat)
+  OutputDatum dat -> PlutusTx.unsafeFromBuiltinData @Datum (getDatum dat)
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- Thread Token functions that get compiled as part of the Minting Policy Script
@@ -520,7 +521,7 @@ getPid oref tn = Ledger.policyId (versionedPolicy oref tn)
 
 covIdx = getCovIdx $$(PlutusTx.compile [||agdaValidator||])
 covIdx :: CoverageIndex
-ccode :: PlutusTx.CompiledCode (Label -> Input -> ScriptContext -> Bool)
+ccode :: PlutusTx.CompiledCode (Datum -> Redeemer -> ScriptContext -> Bool)
 ccode = $$(PlutusTx.compile [||agdaValidator||])
 
 test :: SerialisedScript
