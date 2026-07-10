@@ -198,7 +198,7 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "0718e4a99caf1d8033b55b6f97c848068100e989b4da81185e6899fb"
+curr = "340ff005e065f224c80eb77d31b45c519c254ade2f1991f92b990357"
 
 tt :: AssetClass
 tt = assetClass curr tn

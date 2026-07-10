@@ -335,7 +335,7 @@ agdaValidator (tok, lab) inp ctx =
         checkTokenOut tok ctx
           && continuing ctx
           && checkSigned pkh ctx
-          && not (isJust (lookup pkh lab))
+          && isNothing (lookup pkh lab)
           && newDatum ctx
           == (tok, insert pkh emptyValue lab)
           && newValue ctx
@@ -411,11 +411,18 @@ mkOtherAddress = V3.validatorAddress smTypedValidator
 
 {-# INLINEABLE getMintedAmount #-}
 getMintedAmount :: ScriptContext -> Integer
-getMintedAmount ctx = case flattenValue (txInfoMint (scriptContextTxInfo ctx)) of
-  [(cs, _, a)]
-    | cs == ownCurrencySymbol ctx -> a
-    | otherwise -> 0
+getMintedAmount ctx = case ( filter
+                              (\(cs, tn, amt) -> cs == ownCurrencySymbol ctx)
+                              (flattenValue (txInfoMint (scriptContextTxInfo ctx)))
+                           ) of
+  [(cs, tn, amt)] -> amt
   _ -> 0
+
+{-case flattenValue (txInfoMint (scriptContextTxInfo ctx)) of
+[(cs, _, a)]
+  | cs == ownCurrencySymbol ctx -> a
+  | otherwise -> 0
+_ -> 0-}
 
 {-# INLINEABLE consumes #-}
 consumes :: TxOutRef -> ScriptContext -> Bool
@@ -438,8 +445,8 @@ checkTokenOutAddr addr ac ctx = getVal (outputAtAddr addr ctx) ac == 1
 {-# INLINEABLE continuingAddr #-}
 continuingAddr :: Address -> ScriptContext -> Bool
 continuingAddr addr ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfoOutputs (scriptContextTxInfo ctx)) of
-  [] -> False
-  _ -> True
+  [o] -> True
+  _ -> False
 
 {-# INLINEABLE newDatumAddr #-}
 newDatumAddr :: Address -> ScriptContext -> Datum
@@ -460,10 +467,19 @@ checkDatum addr tn ctx =
   case newDatumAddr addr ctx of
     (tok, map) -> ownAssetClass tn ctx == tok && map == []
 
+{-# INLINEABLE newValueAddr #-}
+newValueAddr :: Address -> ScriptContext -> Value
+newValueAddr addr ctx = txOutValue (outputAtAddr addr ctx)
+
 {-# INLINEABLE checkValue #-}
 checkValue :: Address -> TokenName -> ScriptContext -> Bool
 checkValue addr tn ctx =
   checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
+    && newValueAddr addr ctx
+    == minValue
+    + assetClassValue (ownAssetClass tn ctx) 1
+
+-- checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
 
 {-# INLINEABLE isInitial #-}
 isInitial :: Address -> TxOutRef -> TokenName -> ScriptContext -> Bool
@@ -477,10 +493,13 @@ isInitial addr oref tn ctx = consumes oref ctx && checkValue addr tn ctx && chec
 agdaPolicy :: Address -> TxOutRef -> TokenName -> () -> ScriptContext -> Bool
 agdaPolicy addr oref tn _ ctx =
   if amt == 1
-    then continuingAddr addr ctx && isInitial addr oref tn ctx
+    then
+      continuingAddr addr ctx
+        && consumes oref ctx
+        && checkValue addr tn ctx
+        && checkDatum addr tn ctx
     else if amt == (-1) then not (continuingAddr addr ctx) else False
   where
-    amt :: Integer
     amt = getMintedAmount ctx
 
 ------------------------------------------------------------------------------------------------------------------------------
