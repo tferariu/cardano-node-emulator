@@ -127,6 +127,8 @@ import UntypedPlutusCore qualified as UPLC
 import UntypedPlutusCore.Evaluation.Machine.Cek qualified as UPLC
 import Prelude (IO, Show (..), String, writeFile)
 
+-- import Plutus.Examples.Lib
+
 -- Custom types for the validator
 
 type AccMap = [(PubKeyHash, Value)]
@@ -139,7 +141,7 @@ data Redeemer
   | Withdraw PubKeyHash Value
   | Deposit PubKeyHash Value
   | Transfer PubKeyHash PubKeyHash Value
-  | Cleanup
+  | Stop
   deriving (Show)
 
 -- Necessary for template Haskell and compiling the validator
@@ -251,13 +253,58 @@ checkTokenBurned ac ctx = case flattenValue (txInfoMint (scriptContextTxInfo ctx
   _ -> False
 
 ------------------------------------------------------------------------------------------------------------------------------
--- Contract-specific helper functions that get compiled as part of the validator
+-- Generic helper functions that get compiled as part of the Minting Policy Script
 ------------------------------------------------------------------------------------------------------------------------------
 
-{-# INLINEABLE checkMembership #-}
-checkMembership :: Maybe Value -> Bool
-checkMembership Nothing = False
-checkMembership (Just v) = True
+{-# INLINEABLE getMintedAmount #-}
+getMintedAmount :: ScriptContext -> Integer
+getMintedAmount ctx = case ( filter
+                              (\(cs, tn, amt) -> cs == ownCurrencySymbol ctx)
+                              (flattenValue (txInfoMint (scriptContextTxInfo ctx)))
+                           ) of
+  [(cs, tn, amt)] -> amt
+  _ -> 0
+
+{-# INLINEABLE consumes #-}
+consumes :: TxOutRef -> ScriptContext -> Bool
+consumes oref ctx = any (\i -> txInInfoOutRef i == oref) $ txInfoInputs (scriptContextTxInfo ctx)
+
+{-# INLINEABLE ownAssetClass #-}
+ownAssetClass :: TokenName -> ScriptContext -> AssetClass
+ownAssetClass tn ctx = AssetClass (ownCurrencySymbol ctx, tn)
+
+{-# INLINEABLE outputAtAddr #-}
+outputAtAddr :: Address -> ScriptContext -> TxOut
+outputAtAddr addr ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfoOutputs (scriptContextTxInfo ctx)) of
+  [o] -> o
+  _ -> error ()
+
+{-# INLINEABLE checkTokenOutAddr #-}
+checkTokenOutAddr :: Address -> AssetClass -> ScriptContext -> Bool
+checkTokenOutAddr addr ac ctx = getVal (outputAtAddr addr ctx) ac == 1
+
+{-# INLINEABLE continuingAddr #-}
+continuingAddr :: Address -> ScriptContext -> Bool
+continuingAddr addr ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfoOutputs (scriptContextTxInfo ctx)) of
+  [o] -> True
+  _ -> False
+
+{-# INLINEABLE newDatumAddr #-}
+newDatumAddr :: Address -> ScriptContext -> Datum
+newDatumAddr addr ctx = case txOutDatum (outputAtAddr addr ctx) of
+  NoOutputDatum -> error ()
+  OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
+    Nothing -> error ()
+    Just d -> d
+  OutputDatum dat -> PlutusTx.unsafeFromBuiltinData @Datum (getDatum dat)
+
+{-# INLINEABLE newValueAddr #-}
+newValueAddr :: Address -> ScriptContext -> Value
+newValueAddr addr ctx = txOutValue (outputAtAddr addr ctx)
+
+------------------------------------------------------------------------------------------------------------------------------
+-- Contract-specific helper functions that get compiled as part of the validator
+------------------------------------------------------------------------------------------------------------------------------
 
 {-# INLINEABLE checkEmpty #-}
 checkEmpty :: Maybe Value -> Bool
@@ -328,63 +375,62 @@ instance Scripts.ValidatorTypes AccountSim where
 
 {-# INLINEABLE agdaValidator #-}
 agdaValidator :: Datum -> Redeemer -> ScriptContext -> Bool
-agdaValidator (tok, lab) inp ctx =
+agdaValidator (tok, map) red ctx =
   checkTokenIn tok ctx
-    && case inp of
+    && case red of
       Open pkh ->
         checkTokenOut tok ctx
           && continuing ctx
           && checkSigned pkh ctx
-          && isNothing (lookup pkh lab)
+          && isNothing (lookup pkh map)
           && newDatum ctx
-          == (tok, insert pkh emptyValue lab)
+          == (tok, insert pkh emptyValue map)
           && newValue ctx
           == oldValue ctx
       Close pkh ->
         checkTokenOut tok ctx
           && continuing ctx
           && checkSigned pkh ctx
-          && checkEmpty (lookup pkh lab)
+          && checkEmpty (lookup pkh map)
           && newDatum ctx
-          == (tok, delete pkh lab)
+          == (tok, delete pkh map)
           && newValue ctx
           == oldValue ctx
-      Withdraw pkh val ->
-        checkTokenOut tok ctx
-          && continuing ctx
-          && checkSigned pkh ctx
-          && checkWithdraw tok (lookup pkh lab) pkh val lab ctx
-          && newValue ctx
-          == oldValue ctx
-          - val
       Deposit pkh val ->
         checkTokenOut tok ctx
           && continuing ctx
           && checkSigned pkh ctx
-          && checkDeposit tok (lookup pkh lab) pkh val lab ctx
+          && checkDeposit tok (lookup pkh map) pkh val map ctx
           && newValue ctx
           == oldValue ctx
           + val
+      Withdraw pkh val ->
+        checkTokenOut tok ctx
+          && continuing ctx
+          && checkSigned pkh ctx
+          && checkWithdraw tok (lookup pkh map) pkh val map ctx
+          && newValue ctx
+          == oldValue ctx
+          - val
       Transfer from to val ->
         checkTokenOut tok ctx
           && continuing ctx
           && checkSigned from ctx
           && checkTransfer
             tok
-            (lookup from lab)
-            (lookup to lab)
+            (lookup from map)
+            (lookup to map)
             from
             to
             val
-            lab
+            map
             ctx
           && newValue ctx
           == oldValue ctx
-      Cleanup ->
+      Stop ->
         checkTokenBurned tok ctx
-          && not (checkTokenOut tok ctx)
           && not (continuing ctx)
-          && lab
+          && map
           == []
 
 ------------------------------------------------------------------------------------------------------------------------------
@@ -406,58 +452,6 @@ mkOtherAddress :: Address
 mkOtherAddress = V3.validatorAddress smTypedValidator
 
 ------------------------------------------------------------------------------------------------------------------------------
--- Generic helper functions that get compiled as part of the Minting Policy Script
-------------------------------------------------------------------------------------------------------------------------------
-
-{-# INLINEABLE getMintedAmount #-}
-getMintedAmount :: ScriptContext -> Integer
-getMintedAmount ctx = case ( filter
-                              (\(cs, tn, amt) -> cs == ownCurrencySymbol ctx)
-                              (flattenValue (txInfoMint (scriptContextTxInfo ctx)))
-                           ) of
-  [(cs, tn, amt)] -> amt
-  _ -> 0
-
-{-case flattenValue (txInfoMint (scriptContextTxInfo ctx)) of
-[(cs, _, a)]
-  | cs == ownCurrencySymbol ctx -> a
-  | otherwise -> 0
-_ -> 0-}
-
-{-# INLINEABLE consumes #-}
-consumes :: TxOutRef -> ScriptContext -> Bool
-consumes oref ctx = any (\i -> txInInfoOutRef i == oref) $ txInfoInputs (scriptContextTxInfo ctx)
-
-{-# INLINEABLE ownAssetClass #-}
-ownAssetClass :: TokenName -> ScriptContext -> AssetClass
-ownAssetClass tn ctx = AssetClass (ownCurrencySymbol ctx, tn)
-
-{-# INLINEABLE outputAtAddr #-}
-outputAtAddr :: Address -> ScriptContext -> TxOut
-outputAtAddr addr ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfoOutputs (scriptContextTxInfo ctx)) of
-  [o] -> o
-  _ -> error ()
-
-{-# INLINEABLE checkTokenOutAddr #-}
-checkTokenOutAddr :: Address -> AssetClass -> ScriptContext -> Bool
-checkTokenOutAddr addr ac ctx = getVal (outputAtAddr addr ctx) ac == 1
-
-{-# INLINEABLE continuingAddr #-}
-continuingAddr :: Address -> ScriptContext -> Bool
-continuingAddr addr ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfoOutputs (scriptContextTxInfo ctx)) of
-  [o] -> True
-  _ -> False
-
-{-# INLINEABLE newDatumAddr #-}
-newDatumAddr :: Address -> ScriptContext -> Datum
-newDatumAddr addr ctx = case txOutDatum (outputAtAddr addr ctx) of
-  NoOutputDatum -> error ()
-  OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
-    Nothing -> error ()
-    Just d -> d
-  OutputDatum dat -> PlutusTx.unsafeFromBuiltinData @Datum (getDatum dat)
-
-------------------------------------------------------------------------------------------------------------------------------
 -- Thread Token functions that get compiled as part of the Minting Policy Script
 ------------------------------------------------------------------------------------------------------------------------------
 
@@ -467,10 +461,6 @@ checkDatum addr tn ctx =
   case newDatumAddr addr ctx of
     (tok, map) -> ownAssetClass tn ctx == tok && map == []
 
-{-# INLINEABLE newValueAddr #-}
-newValueAddr :: Address -> ScriptContext -> Value
-newValueAddr addr ctx = txOutValue (outputAtAddr addr ctx)
-
 {-# INLINEABLE checkValue #-}
 checkValue :: Address -> TokenName -> ScriptContext -> Bool
 checkValue addr tn ctx =
@@ -479,27 +469,23 @@ checkValue addr tn ctx =
     == minValue
     + assetClassValue (ownAssetClass tn ctx) 1
 
--- checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
-
-{-# INLINEABLE isInitial #-}
-isInitial :: Address -> TxOutRef -> TokenName -> ScriptContext -> Bool
-isInitial addr oref tn ctx = consumes oref ctx && checkValue addr tn ctx && checkDatum addr tn ctx
-
 ------------------------------------------------------------------------------------------------------------------------------
 -- The Minting Policy Script
 ------------------------------------------------------------------------------------------------------------------------------
 
 {-# INLINEABLE agdaPolicy #-}
-agdaPolicy :: Address -> TxOutRef -> TokenName -> () -> ScriptContext -> Bool
+agdaPolicy
+  :: Address -> TxOutRef -> TokenName -> () -> ScriptContext -> Bool
 agdaPolicy addr oref tn _ ctx =
   if amt == 1
     then
       continuingAddr addr ctx
         && consumes oref ctx
-        && checkValue addr tn ctx
         && checkDatum addr tn ctx
+        && checkValue addr tn ctx
     else if amt == (-1) then not (continuingAddr addr ctx) else False
   where
+    amt :: Integer
     amt = getMintedAmount ctx
 
 ------------------------------------------------------------------------------------------------------------------------------

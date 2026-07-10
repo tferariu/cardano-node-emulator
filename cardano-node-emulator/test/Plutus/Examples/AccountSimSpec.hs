@@ -198,7 +198,7 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "340ff005e065f224c80eb77d31b45c519c254ade2f1991f92b990357"
+curr = "bfed96f3a7812e5f234ab9fdd94203906f9c960de6aacb8a91215b00"
 
 tt :: AssetClass
 tt = assetClass curr tn
@@ -278,7 +278,7 @@ instance ContractModel AccountSimModel where
     | Withdraw Wallet Value
     | Deposit Wallet Value
     | Transfer Wallet Wallet Value
-    | Cleanup Wallet
+    | Stop Wallet
     deriving (Eq, Show, Generic)
 
   initialState =
@@ -330,7 +330,7 @@ instance ContractModel AccountSimModel where
           vT = fromJust (lookup' to label')
       label .= insert from (vF PlutusTx.- v) (insert to (vT PlutusTx.+ v) label')
       wait 1
-    Cleanup w -> do
+    Stop w -> do
       phase .= Initial
       actualValue' <- viewContractState actualValue
       deposit (walletAddress w) (actualValue')
@@ -346,7 +346,7 @@ instance ContractModel AccountSimModel where
     Withdraw w v -> currentPhase == Running && lookupGT w v accMap
     Deposit w v -> currentPhase == Running && elem w accounts
     Transfer from to v -> currentPhase == Running && lookupGT from v accMap && elem to accounts && from /= to
-    Cleanup w -> currentPhase == Running && accMap == []
+    Stop w -> currentPhase == Running && accMap == []
     where
       currentPhase = s ^. contractState . phase
       accMap = s ^. contractState . label
@@ -360,7 +360,7 @@ instance ContractModel AccountSimModel where
       [ (1, Start <$> genWallet)
       , (1, Open <$> genWallet)
       , (1, Close <$> genWallet)
-      , (5, Cleanup <$> genWallet)
+      , (5, Stop <$> genWallet)
       , (6, genWithdrawAction)
       ,
         ( 3
@@ -444,9 +444,9 @@ act = \case
         (walletPrivateKey from)
         v
         tt
-  Cleanup w ->
+  Stop w ->
     void $
-      API.cleanup
+      API.stop
         (walletAddress w)
         (walletPrivateKey w)
         tt
@@ -499,12 +499,12 @@ instance RunModel AccountSimModel E.EmulatorM where
         (walletPrivateKey from)
         v
         ttref
-  perform s (Cleanup w) translate = void $ do
+  perform s (Stop w) translate = void $ do
     let ttref = fromAssetId (fromJust (translate <$> s ^. contractState . threadToken))
         -- extracting the TxIn from the symbolic version in the models
         tinref = fromJust (translate <$> s ^. contractState . txIn)
     lift $
-      API.cleanup
+      API.stop
         (walletAddress w)
         (walletPrivateKey w)
         ttref
@@ -676,16 +676,16 @@ tests =
           act $ Open 1
     , checkPredicateOptions
         options
-        "can start and cleanup"
+        "can start and Stop"
         ( hasValidatedTransactionCountOfTotal 2 2
             .&&. walletFundsChange (walletAddress w1) mempty
         )
         $ do
           act $ Start 1
-          act $ Cleanup 1
+          act $ Stop 1
     , checkPredicateOptions
         options
-        "can open, deposit, withdraw, close, cleanup"
+        "can open, deposit, withdraw, close, Stop"
         ( hasValidatedTransactionCountOfTotal 6 6
             .&&. walletFundsChange (walletAddress w1) mempty
             .&&. walletFundsChange (walletAddress w5) mempty
@@ -696,7 +696,7 @@ tests =
           act $ Deposit 5 (Ada.adaValueOf 10)
           act $ Withdraw 5 (Ada.adaValueOf 10)
           act $ Close 5
-          act $ Cleanup 1
+          act $ Stop 1
     , testProperty "QuickCheck ContractModel" $ QC.withMaxSuccess 100 (prop_AccountSim)
     , testProperty "QuickCheck CancelDL" (QC.expectFailure prop_Check)
     ]

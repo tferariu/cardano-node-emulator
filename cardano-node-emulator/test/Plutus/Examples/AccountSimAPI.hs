@@ -24,7 +24,7 @@ module Plutus.Examples.AccountSimAPI (
   withdraw,
   deposit,
   transfer,
-  cleanup,
+  stop,
   TxSuccess (..),
 ) where
 
@@ -666,12 +666,12 @@ transfer wallet wallet' privateKey val tt = do
 -- Creating the transaction that removes the contract from the blockchain and burns the thread token
 ------------------------------------------------------------------------------------------------------------------------------
 
-mkCleanupTx
+mkStopTx
   :: (E.MonadEmulator m)
   => AssetClass
   -> C.TxIn
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex)
-mkCleanupTx tt tin = do
+mkStopTx tt tin = do
   let smAddress = mkAddress
   unspentOutputs <- E.utxosAt smAddress
   slotConfig <- asks pSlotConfig
@@ -695,7 +695,7 @@ mkCleanupTx tt tin = do
 
   let
     validityRange = toValidityRange slotConfig $ Interval.from current
-    redeemer = toHashableScriptData (Cleanup)
+    redeemer = toHashableScriptData (Stop)
     witnessHeader =
       C.toCardanoTxInScriptWitnessHeader
         (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator))
@@ -729,15 +729,15 @@ mkCleanupTx tt tin = do
    in
     pure (C.CardanoBuildTx utx, unspentOutputs)
 
--- Submitting the Cleanup transaction
-cleanup
+-- Submitting the Stop transaction
+stop
   :: (E.MonadEmulator m)
   => Ledger.CardanoAddress
   -> Ledger.PaymentPrivateKey
   -> AssetClass
   -> C.TxIn
   -> m TxSuccess
-cleanup wallet privateKey tt tin = do
-  E.logInfo @String "Cleanup"
-  (utx, utxoIndex) <- mkCleanupTx tt tin
+stop wallet privateKey tt tin = do
+  E.logInfo @String "Stop"
+  (utx, utxoIndex) <- mkStopTx tt tin
   TxSuccess . getCardanoTxId <$> E.submitTxConfirmed utxoIndex wallet [toWitness privateKey] utx
