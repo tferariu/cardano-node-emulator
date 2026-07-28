@@ -76,15 +76,15 @@ import Ledger qualified
 import Ledger.Tx.CardanoAPI (fromCardanoSlotNo)
 import Ledger.Typed.Scripts qualified as Scripts
 import Ledger.Value.CardanoAPI qualified as Value
-import Plutus.Examples.MultiSig hiding (Info (..), Input (..))
+import Plutus.Examples.MultiSig hiding (Label (..), Redeemer (..))
 import Plutus.Examples.MultiSig qualified as Impl
 import Plutus.Examples.MultiSigAPI (
   add,
   cancel,
-  close,
   pay,
   propose,
   start,
+  stop,
  )
 import Plutus.Script.Utils.Ada qualified as Ada
 import Plutus.Script.Utils.Value (
@@ -185,7 +185,7 @@ modelParams =
         , unPaymentPubKeyHash (walletPaymentPubKeyHash w5)
         , unPaymentPubKeyHash (walletPaymentPubKeyHash w3)
         ]
-    , nr = 2
+    , minSigs = 2
     , maxWait = 2000000000
     }
 
@@ -193,19 +193,19 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "815d601333ae4d4e67510a10e053c2b62f8763161749f12b4bf92597"
+curr = "06a09b62d920b5629e577676dbb7fac61caaef42bff3edcc91289764"
 
 tn' :: TokenName
 tn' = "ThreadToken"
 
 curr' :: CurrencySymbol
-curr' = "c4063aef9aac5f98647716727f44ff9181a65004a98fe6bbbba1b4f6"
+curr' = "6d398fcdd992e2ced3cc2b083e98b0b6aa1e116cc230388444313388"
 
 tin :: API.TxIn
 tin = API.TxIn "b0de2873afe95a6530bf1ae88096cf43e17bb2ee669f9ba600838949ac1e08ec" (API.TxIx 5)
 
 tin' :: API.TxIn
-tin' = API.TxIn "8d3e7d0623eadc6b861a5d6ac76ed793b3b965506b6c6f32469f756b8e4e28f6" (API.TxIx 1)
+tin' = API.TxIn "abaad5696c7e2719b2529f22c44c8a31842d16ad250905a97d6478e98f5b7d1a" (API.TxIx 1)
 
 -- Debug Switches
 ok :: Bool
@@ -261,7 +261,7 @@ data Phase
   | Collecting
   deriving (Show, Eq, Generic)
 
-data MultiSigModel = MultiSigModel
+data MultiSigState = MultiSigState
   { _actualValue :: Value
   , _allowedSignatories :: [Wallet]
   , _requiredSignatories :: Integer
@@ -275,9 +275,9 @@ data MultiSigModel = MultiSigModel
   }
   deriving (Eq, Show, Generic)
 
-makeLenses ''MultiSigModel
+makeLenses ''MultiSigState
 
-options :: E.Options MultiSigModel
+options :: E.Options MultiSigState
 options =
   E.defaultOptions
     { E.initialDistribution = defInitialDist
@@ -291,21 +291,21 @@ genWallet = QC.elements testWallets
 genTT :: QC.Gen AssetClass
 genTT = QC.elements [tt]
 
-instance ContractModel MultiSigModel where
-  data Action MultiSigModel
+instance ContractModel MultiSigState where
+  data Action MultiSigState
     = Propose Wallet Value Wallet Integer
     | Add Wallet
     | Pay Wallet
     | Cancel Wallet
     | Start Wallet Value
-    | Close Wallet
+    | Stop Wallet
     deriving (Eq, Show, Generic)
 
   initialState =
-    MultiSigModel
+    MultiSigState
       { _actualValue = mempty
       , _allowedSignatories = [w5, w3, w4]
-      , _requiredSignatories = (nr modelParams)
+      , _requiredSignatories = (minSigs modelParams)
       , _threadToken = Nothing
       , _phase = Initial
       , _paymentValue = mempty
@@ -359,7 +359,7 @@ instance ContractModel MultiSigModel where
       txIn .= Just symTxIn
       actualSignatories .= []
       wait 1
-    Close w -> do
+    Stop w -> do
       phase .= Initial
       actualValue' <- viewContractState actualValue
       deposit (walletAddress w) (actualValue')
@@ -374,7 +374,7 @@ instance ContractModel MultiSigModel where
     Pay w -> currentPhase == Collecting && ((length actualSigs) >= (fromIntegral min)) && w == receiver
     Cancel w -> currentPhase == Collecting && ((d + 2000) < timeInt)
     Start w v -> currentPhase == Initial && (v `geq` x2MinValue)
-    Close w -> currentPhase == Holding && ((Ada.toValue Ledger.minAdaTxOutEstimated) `gt` currentValue)
+    Stop w -> currentPhase == Holding && ((Ada.toValue Ledger.minAdaTxOutEstimated) `gt` currentValue)
     where
       currentPhase = s ^. contractState . phase
       currentValue = (s ^. contractState . actualValue) <> (PlutusTx.negate (Ada.toValue 3000000)) -- liquid value
@@ -412,7 +412,7 @@ instance ContractModel MultiSigModel where
                     <$> choose (((Ada.getLovelace Ledger.minAdaTxOutEstimated) * 2), 100_000_000)
                 )
         )
-      , (3, Close <$> genWallet)
+      , (3, Stop <$> genWallet)
       ]
     where
       amount = (s ^. contractState . actualValue)
@@ -421,7 +421,7 @@ instance ContractModel MultiSigModel where
       timeInt = Ledger.getPOSIXTime time
 
 -- for the first/only smart contract instance, baking in the thread token is fine
-act :: Action MultiSigModel -> E.EmulatorM ()
+act :: Action MultiSigState -> E.EmulatorM ()
 act = \case
   Propose w1 v w2 d ->
     void $
@@ -462,9 +462,9 @@ act = \case
         modelParams
         v
         False
-  Close w ->
+  Stop w ->
     void $
-      close
+      stop
         (walletAddress w)
         (walletPrivateKey w)
         modelParams
@@ -473,7 +473,7 @@ act = \case
         False
 
 -- For multiple instances we need to specify the thread token of the current contract being used.
-act' :: Action MultiSigModel -> AssetClass -> E.EmulatorM ()
+act' :: Action MultiSigState -> AssetClass -> E.EmulatorM ()
 act' a tok = case a of
   Propose w1 v w2 d ->
     void $
@@ -514,9 +514,9 @@ act' a tok = case a of
         modelParams
         v
         ok
-  Close w ->
+  Stop w ->
     void $
-      close
+      stop
         (walletAddress w)
         (walletPrivateKey w)
         modelParams
@@ -524,7 +524,7 @@ act' a tok = case a of
         tin'
         ok'
 
-instance RunModel MultiSigModel E.EmulatorM where
+instance RunModel MultiSigState E.EmulatorM where
   perform s (Start w v) translate = do
     (oref, tin, tout) <- lift $ start (walletAddress w) (walletPrivateKey w) modelParams v False
     QCCM.registerToken "thread token" (toAssetId (makeTT oref))
@@ -564,11 +564,11 @@ instance RunModel MultiSigModel E.EmulatorM where
         (walletPrivateKey w)
         modelParams
         ttref
-  perform s (Close w) translate = void $ do
+  perform s (Stop w) translate = void $ do
     let ttref = fromAssetId (fromJust (translate <$> s ^. contractState . threadToken))
         tinref = fromJust (translate <$> s ^. contractState . txIn)
     lift $
-      close
+      stop
         (walletAddress w)
         (walletPrivateKey w)
         modelParams
@@ -587,10 +587,10 @@ defInitialDist =
       ))
       <$> E.knownAddresses
 
-prop_MultiSig :: Actions MultiSigModel -> Property
+prop_MultiSig :: Actions MultiSigState -> Property
 prop_MultiSig = E.propRunActionsWithOptions options
 
-simpleVestTest :: DL MultiSigModel ()
+simpleVestTest :: DL MultiSigState ()
 simpleVestTest = do
   action $ Start 1 (Ada.adaValueOf 100)
   action $ Propose 2 (Ada.adaValueOf 10) 3 111111111111111111111111111
@@ -700,10 +700,11 @@ tests =
           act $ Pay 2
     , checkPredicateOptions
         options
-        "can close"
+        "can Stop"
         ( hasValidatedTransactionCountOfTotal 6 6
             .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-100))
             .&&. walletFundsChange (walletAddress w3) (Value.adaValueOf 97)
+            .&&. walletFundsChange (walletAddress w4) (Value.adaValueOf 3)
         )
         $ do
           act $ Start 1 (Ada.adaValueOf 100)
@@ -711,14 +712,15 @@ tests =
           act $ Add 4
           act $ Add 5
           act $ Pay 3
-          act $ Close 4
+          act $ Stop 4
     , checkPredicateOptions
         options
-        "can close and reopen and pay"
+        "can stop and reopen and pay"
         ( hasValidatedTransactionCountOfTotal 12 12
             .&&. walletFundsChange (walletAddress w1) (Value.adaValueOf (-200))
             .&&. walletFundsChange (walletAddress w3) (Value.adaValueOf 97)
             .&&. walletFundsChange (walletAddress w2) (Value.adaValueOf 97)
+            .&&. walletFundsChange (walletAddress w4) (Value.adaValueOf 6)
         )
         $ do
           act $ Start 1 (Ada.adaValueOf 100)
@@ -726,13 +728,13 @@ tests =
           act $ Add 4
           act $ Add 5
           act $ Pay 3
-          act $ Close 4
+          act $ Stop 4
           act' (Start 1 (Ada.adaValueOf 100)) tt'
           act' (Propose 4 (Ada.adaValueOf 97) 2 12345) tt'
           act' (Add 4) tt'
           act' (Add 5) tt'
           act' (Pay 2) tt'
-          act' (Close 4) tt'
+          act' (Stop 4) tt'
     , checkPredicateOptions
         options
         "can add many"

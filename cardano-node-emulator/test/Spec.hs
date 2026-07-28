@@ -23,12 +23,7 @@ tests :: TestTree
 tests =
   testGroup
     "all tests"
-    [ -- GeneratorsSpec.tests
-      -- , MTLSpec.tests
-      -- , GameSpec.tests
-      -- , EscrowSpec.tests
-      --  TemplateSpec.tests
-      -- , DExSpec.tests
-      AccountSimSpec.tests
-      -- MultiSigSpec.tests
+    [ AccountSimSpec.tests
+    , MultiSigSpec.tests
+    , DExSpec.tests
     ]

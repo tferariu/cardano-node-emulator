@@ -23,7 +23,7 @@ module Plutus.Examples.MultiSigAPI (
   pay,
   cancel,
   start,
-  close,
+  stop,
   TxSuccess (..),
 ) where
 
@@ -70,7 +70,8 @@ import Plutus.Script.Utils.Value
 import PlutusLedgerApi.V1.Address
 import PlutusLedgerApi.V1.Interval qualified as Interval
 import PlutusLedgerApi.V2.Tx hiding (TxId)
-import PlutusLedgerApi.V3 hiding (TxId)
+import PlutusLedgerApi.V3 hiding (Datum, Redeemer, TxId)
+import PlutusLedgerApi.V3 qualified as V3
 import PlutusLedgerApi.V3.Contexts hiding (TxId)
 import PlutusTx (ToData)
 import PlutusTx qualified
@@ -179,11 +180,11 @@ mkStartTx params wallet v b = do
         C.TxOut
           smAddress
           (toTxOutValue (v <> assetClassValue tt 1))
-          (toTxOutInlineDatum @Label (tt, Holding))
+          (toTxOutInlineDatum @Datum (tt, Holding))
           C.ReferenceScriptNone
       validityRange = toValidityRange slotConfig $ Interval.always
   let mintValue = threadTokenValue params oref tn an
-      redeemer = Redeemer (toBuiltinData ())
+      redeemer = V3.Redeemer (toBuiltinData ())
 
   let mintWitness =
         either (error . show) id $
@@ -361,7 +362,7 @@ mkAddTx params wallet tt = do
   let
     remainingValue = C.fromCardanoValue (foldMap Ledger.cardanoTxOutValue validUnspentOutputs)
     extraKeyWit = either (error . show) id $ C.toCardanoPaymentKeyHash pkh
-    datums = map (cardanoTxOutDatum @Label) (Map.elems validUnspentOutputs)
+    datums = map (cardanoTxOutDatum @Datum) (Map.elems validUnspentOutputs)
     datum = case datums of
       (Just (tt, (Collecting v pkh' d sigs))) : _ ->
         (tt, (Collecting v pkh' d (insert (unPaymentPubKeyHash pkh) sigs)))
@@ -442,7 +443,7 @@ mkPayTx params wallet tt = do
   let
     currentValue = C.fromCardanoValue (foldMap Ledger.cardanoTxOutValue validUnspentOutputs)
     extraKeyWit = either (error . show) id $ C.toCardanoPaymentKeyHash pkh
-    datums = map (cardanoTxOutDatum @Label) (Map.elems validUnspentOutputs)
+    datums = map (cardanoTxOutDatum @Datum) (Map.elems validUnspentOutputs)
     (datum, (v, pkh2)) = case datums of
       (Just (tt, (Collecting v pkh' d sigs))) : _ ->
         ((tt, Holding), (v, pkh'))
@@ -520,7 +521,7 @@ mkCancelTx params tt = do
         "not SM"
   let
     remainingValue = C.fromCardanoValue (foldMap Ledger.cardanoTxOutValue validUnspentOutputs)
-    datums = map (cardanoTxOutDatum @Label) (Map.elems validUnspentOutputs)
+    datums = map (cardanoTxOutDatum @Datum) (Map.elems validUnspentOutputs)
     (datum, d) = case datums of
       (Just (tt, (Collecting v pkh d' sigs))) : _ ->
         ((tt, Holding), d')
@@ -561,14 +562,14 @@ cancel wallet privateKey params tt = do
   (utx, utxoIndex) <- mkCancelTx params tt
   TxSuccess . getCardanoTxId <$> E.submitTxConfirmed utxoIndex wallet [toWitness privateKey] utx
 
-mkCloseTx
+mkStopTx
   :: (E.MonadEmulator m)
   => Params
   -> AssetClass
   -> C.TxIn
   -> Bool
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex)
-mkCloseTx params tt tin b = do
+mkStopTx params tt tin b = do
   let smAddress = mkAddress params
   unspentOutputs <- E.utxosAt smAddress
   slotConfig <- asks pSlotConfig
@@ -596,7 +597,7 @@ mkCloseTx params tt tin b = do
         ("Actually: " ++ show (currentValue) ++ " and " ++ show validUnspentOutputs)
   let
     validityRange = toValidityRange slotConfig $ Interval.from current
-    redeemer = toHashableScriptData (Close)
+    redeemer = toHashableScriptData (Stop)
     witnessHeader =
       C.toCardanoTxInScriptWitnessHeader
         (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator params))
@@ -613,7 +614,10 @@ mkCloseTx params tt tin b = do
     mintValue = burnTokenValue params oref tn an
     mintWitness =
       either (error . show) id $
-        C.toCardanoMintWitness (Redeemer (toBuiltinData ())) Nothing (Just (versionedPolicy params oref tn))
+        C.toCardanoMintWitness
+          (V3.Redeemer (toBuiltinData ()))
+          Nothing
+          (Just (versionedPolicy params oref tn))
     txMintValue =
       C.TxMintValue
         C.MaryEraOnwardsConway
@@ -629,7 +633,7 @@ mkCloseTx params tt tin b = do
    in
     pure (C.CardanoBuildTx utx, unspentOutputs)
 
-close
+stop
   :: (E.MonadEmulator m)
   => Ledger.CardanoAddress
   -> Ledger.PaymentPrivateKey
@@ -638,7 +642,7 @@ close
   -> C.TxIn
   -> Bool
   -> m TxSuccess
-close wallet privateKey params tt tin b = do
-  E.logInfo @String "Closing"
-  (utx, utxoIndex) <- mkCloseTx params tt tin b
+stop wallet privateKey params tt tin b = do
+  E.logInfo @String "Stopping"
+  (utx, utxoIndex) <- mkStopTx params tt tin b
   TxSuccess . getCardanoTxId <$> E.submitTxConfirmed utxoIndex wallet [toWitness privateKey] utx

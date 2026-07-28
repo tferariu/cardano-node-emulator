@@ -68,14 +68,14 @@ import Ledger qualified
 import Ledger.Tx.CardanoAPI (fromCardanoSlotNo)
 import Ledger.Typed.Scripts qualified as Scripts
 import Ledger.Value.CardanoAPI qualified as Value
-import Plutus.Examples.DEx hiding (Info (..), Input (..))
+import Plutus.Examples.DEx hiding (Label (..), Redeemer (..))
 import Plutus.Examples.DEx qualified as Impl
 import Plutus.Examples.DExAPI (
-  close,
   exchange,
   getPayAmt,
   paymentValue,
   start,
+  stop,
   unite,
   update,
  )
@@ -199,15 +199,15 @@ walletPaymentPubKeyHash =
 modelParams :: Params
 modelParams =
   Params
-    { sellC = stok
-    , buyC = btok
+    { sellCurr = stok
+    , buyCurr = btok
     }
 
 tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "f842be32d6e72c2003925d8719dca9397f96e7e32272b9d0d80b6d79"
+curr = "fbb636b572a941d2544f08a75dec761ea3120c854aeba3fb129da687"
 
 -- Two Thread Tokens are necessary if you open two different instances of the contract
 tn' :: TokenName
@@ -337,7 +337,7 @@ instance ContractModel DExModel where
     = Update Wallet Value PlutusTx.Ratio.Rational
     | Exchange Integer Wallet
     | Start Wallet Value PlutusTx.Ratio.Rational AssetClass AssetClass
-    | Close Wallet
+    | Stop Wallet
     | Unite Wallet
     deriving (Eq, Show, Generic)
 
@@ -377,26 +377,26 @@ instance ContractModel DExModel where
     Exchange amt w -> do
       actualValue' <- viewContractState actualValue
       owner' <- viewContractState owner
-      buyC' <- viewContractState buyAC
-      sellC' <- viewContractState sellAC
+      buyCurr' <- viewContractState buyAC
+      sellCurr' <- viewContractState sellAC
       rate' <- viewContractState rate
       count' <- viewContractState count
       phase .= Running
       count .= increment (fromJust owner') (increment w count')
-      deposit (walletAddress w) (paymentValue' (fromJust sellC') amt)
+      deposit (walletAddress w) (paymentValue' (fromJust sellCurr') amt)
       withdraw (walletAddress w) (lovelaceValue 3_000_000)
-      withdraw (walletAddress w) (paymentValue' (fromJust buyC') (getPayAmt amt (fromJust rate')))
+      withdraw (walletAddress w) (paymentValue' (fromJust buyCurr') (getPayAmt amt (fromJust rate')))
 
       deposit
         (walletAddress (fromJust owner'))
-        (paymentValue' (fromJust buyC') (getPayAmt amt (fromJust rate')))
+        (paymentValue' (fromJust buyCurr') (getPayAmt amt (fromJust rate')))
       deposit (walletAddress (fromJust owner')) (lovelaceValue 3_000_000)
       actualValue
         .= actualValue'
           <> ( PlutusTx.negate
                 ( paymentValue
-                    (fst (unAssetClass (fromJust sellC')))
-                    (snd (unAssetClass (fromJust sellC')))
+                    (fst (unAssetClass (fromJust sellCurr')))
+                    (snd (unAssetClass (fromJust sellCurr')))
                     amt
                 )
              )
@@ -414,7 +414,7 @@ instance ContractModel DExModel where
       buyAC .= Just bac
       sellAC .= Just sac
       wait 1
-    Close w -> do
+    Stop w -> do
       count' <- viewContractState count
       phase .= Initial
       count .= increment w count'
@@ -438,12 +438,12 @@ instance ContractModel DExModel where
         && ((getCount w count') < 3)
         && (amt' > amt + 500)
     Start w v r bac sac -> currentPhase == Initial && ((getCount w count') < 3)
-    Close w -> currentPhase == Running && (w == owner') && ((getCount w count') < 3)
+    Stop w -> currentPhase == Running && (w == owner') && ((getCount w count') < 3)
     where
       currentPhase = s ^. contractState . phase
       currentValue = (s ^. contractState . actualValue)
       owner' = fromJust $ (s ^. contractState . owner)
-      sellC = fromJust $ (s ^. contractState . sellAC)
+      sellCurr = fromJust $ (s ^. contractState . sellAC)
       count' = s ^. contractState . count
       amount = (s ^. contractState . actualValue)
       curr = stok
@@ -461,7 +461,7 @@ instance ContractModel DExModel where
             <*> (fromJust <$> (ratio <$> chooseInteger (1, 10) <*> chooseInteger (1, 10)))
         )
       , (10, Exchange <$> chooseInteger (500, amt) <*> genWallet) -- keep checking with 1
-      , (1, Close <$> genWallet)
+      , (1, Stop <$> genWallet)
       , (5, Unite <$> genWallet)
       ,
         ( 2
@@ -513,9 +513,9 @@ act = \case
         v
         r
         False
-  Close w ->
+  Stop w ->
     void $
-      close
+      stop
         (walletAddress w)
         (walletPrivateKey w)
         modelParams
@@ -552,11 +552,11 @@ instance RunModel DExModel E.EmulatorM where
         (walletPrivateKey w)
         modelParams
         ttref
-  perform s (Close w) translate = void $ do
+  perform s (Stop w) translate = void $ do
     let ttref = fromAssetId (fromJust (translate <$> s ^. contractState . threadToken))
         tinref = fromJust (translate <$> s ^. contractState . txIn)
     lift $
-      close
+      stop
         (walletAddress w)
         (walletPrivateKey w)
         modelParams
@@ -712,7 +712,7 @@ tests =
           act $ Exchange 100 4
     , checkPredicateOptions
         options
-        "can Close"
+        "can Stop"
         ( hasValidatedTransactionCountOfTotal 2 2
             .&&. walletFundsChange (walletAddress w1) mempty
         )
@@ -726,7 +726,7 @@ tests =
               (fromJust (ratio 1 2))
               stok
               btok
-          act $ Close 1
+          act $ Stop 1
     , checkPredicateOptions
         options
         "can Restart"
@@ -743,7 +743,7 @@ tests =
               (fromJust (ratio 1 2))
               stok
               btok
-          act $ Close 1
+          act $ Stop 1
           act $
             Start
               1
@@ -796,7 +796,7 @@ tests =
               )
               (fromJust (ratio 9 3))
           act $ Exchange 300 5
-          act $ Close 1
+          act $ Stop 1
     , checkPredicateOptions
         options
         "Specific Update"

@@ -142,7 +142,6 @@ data Redeemer
   | Deposit PubKeyHash Value
   | Transfer PubKeyHash PubKeyHash Value
   | Stop
-  deriving (Show)
 
 -- Necessary for template Haskell and compiling the validator
 PlutusTx.unstableMakeIsData ''Redeemer

@@ -15,20 +15,18 @@
 {-# LANGUAGE UndecidableInstances #-}
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
-{-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:conservative-optimisation #-}
 
 -- | A Limit Order Book Distributed Exchange smart contract
 module Plutus.Examples.DEx (
   DEx,
-  Label (..),
+  Datum (..),
   Params (..),
   smTypedValidator,
   mkAddress,
 
   -- * Exposed for test endpoints
-  Input (..),
-  Datum,
-  Info (..),
+  Redeemer (..),
+  Label (..),
   agdaValidator,
   agdaPolicy,
   policy,
@@ -106,7 +104,8 @@ import PlutusLedgerApi.V1.Address
 import PlutusLedgerApi.V1.Interval qualified as Interval
 import PlutusLedgerApi.V1.Value qualified as V
 import PlutusLedgerApi.V2.Tx hiding (TxId)
-import PlutusLedgerApi.V3 hiding (TxId, ratio)
+import PlutusLedgerApi.V3 hiding (Datum, Redeemer, TxId, ratio)
+import PlutusLedgerApi.V3 qualified as V3
 import PlutusLedgerApi.V3.Contexts hiding (TxId)
 import PlutusTx (ToData)
 import PlutusTx qualified
@@ -132,33 +131,31 @@ import Prelude (IO, Show (..), String, writeFile)
 
 -- Custom data types for the validator
 
-data Info = Info {ratio :: Rational, owner :: PubKeyHash}
+data Label = Label {ratio :: Rational, owner :: PubKeyHash}
 
 -- Inlineable instance of equality needs to be defined when it cannot be derived
 {-# INLINEABLE lEq #-}
-lEq :: Info -> Info -> Bool
+lEq :: Label -> Label -> Bool
 lEq l1 l2 = ratio l1 == ratio l2 && owner l1 == owner l2
 
-instance Eq Info where
+instance Eq Label where
   {-# INLINEABLE (==) #-}
   b == c = lEq b c
 
-type Label = (AssetClass, Info)
+type Datum = (AssetClass, Label)
 
-data Input
+data Redeemer
   = Update Value Rational
   | Exchange Integer PubKeyHash
-  | Close
-  deriving (Show)
+  | Stop
 
-data Params = Params {sellC :: AssetClass, buyC :: AssetClass}
-  deriving (Show)
+data Params = Params {sellCurr :: AssetClass, buyCurr :: AssetClass}
 
 -- Necessary for template Haskell and compiling the validator
-PlutusTx.unstableMakeIsData ''Info
-PlutusTx.makeLift ''Info
-PlutusTx.unstableMakeIsData ''Input
-PlutusTx.makeLift ''Input
+PlutusTx.unstableMakeIsData ''Label
+PlutusTx.makeLift ''Label
+PlutusTx.unstableMakeIsData ''Redeemer
+PlutusTx.makeLift ''Redeemer
 PlutusTx.unstableMakeIsData ''Params
 PlutusTx.makeLift ''Params
 
@@ -179,13 +176,13 @@ ownInput ctx = case findOwnInput ctx of
   Just i -> txInInfoResolved i
 
 {-# INLINEABLE smDatum #-}
-smDatum :: Maybe Datum -> Maybe Label
+smDatum :: Maybe V3.Datum -> Maybe Datum
 smDatum md = do
-  Datum d <- md
+  V3.Datum d <- md
   PlutusTx.fromBuiltinData d
 
 {-# INLINEABLE newDatum #-}
-newDatum :: ScriptContext -> Label
+newDatum :: ScriptContext -> Datum
 newDatum ctx = case txOutDatum (ownOutput ctx) of
   NoOutputDatum -> error ()
   OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
@@ -261,10 +258,6 @@ checkPayment pkh v ctx = case filter
   (txInfoOutputs (scriptContextTxInfo ctx)) of
   os -> any (\o -> txOutValue o == v) os
 
-{-# INLINEABLE checkMinValue #-}
-checkMinValue :: Value -> Bool
-checkMinValue v = geq v minValue
-
 {-# INLINEABLE getPayment #-}
 getPayment :: PubKeyHash -> ScriptContext -> Value
 getPayment pkh ctx = case filter
@@ -295,7 +288,7 @@ checkPaymentRatio
   -> Bool
 checkPaymentRatio pkh amt ac r ctx =
   ratioCompare amt (assetClassValueOf (getPayment pkh ctx) ac) r
-    && checkMinValue (getPayment pkh ctx)
+    && geq (getPayment pkh ctx) minValue
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- The Validator
@@ -304,37 +297,36 @@ checkPaymentRatio pkh amt ac r ctx =
 -- Declaring the type of the validator
 data DEx
 instance Scripts.ValidatorTypes DEx where
-  type RedeemerType DEx = Input
-  type DatumType DEx = Label
+  type RedeemerType DEx = Redeemer
+  type DatumType DEx = Datum
 
 {-# INLINEABLE agdaValidator #-}
-agdaValidator :: Params -> Label -> Input -> ScriptContext -> Bool
+agdaValidator :: Params -> Datum -> Redeemer -> ScriptContext -> Bool
 agdaValidator par (tok, lab) red ctx =
   checkTokenIn tok ctx
     && case red of
       Update v r ->
         checkSigned (owner lab) ctx
           && checkRational r
-          && checkMinValue v
+          && geq v minValue
           && newValue ctx
           == v
           && newDatum ctx
-          == (tok, Info r (owner lab))
+          == (tok, Label r (owner lab))
           && continuing ctx
           && checkTokenOut tok ctx
       Exchange amt pkh ->
-        oldValue ctx
-          == newValue ctx
-          + assetClassValue (sellC par) amt
+        newValue ctx
+          + assetClassValue (sellCurr par) amt
+          == oldValue ctx
           && newDatum ctx
           == (tok, lab)
-          && checkPaymentRatio (owner lab) amt (buyC par) (ratio lab) ctx
+          && checkPaymentRatio (owner lab) amt (buyCurr par) (ratio lab) ctx
           && continuing ctx
           && checkTokenOut tok ctx
-      Close ->
+      Stop ->
         not (continuing ctx)
           && checkTokenBurned tok ctx
-          && not (checkTokenOut tok ctx)
           && checkSigned (owner lab) ctx
 
 ------------------------------------------------------------------------------------------------------------------------------
@@ -393,13 +385,13 @@ continuingAddr addr ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfo
   _ -> True
 
 {-# INLINEABLE newDatumAddr #-}
-newDatumAddr :: Address -> ScriptContext -> Label
+newDatumAddr :: Address -> ScriptContext -> Datum
 newDatumAddr addr ctx = case txOutDatum (outputAtAddr addr ctx) of
   NoOutputDatum -> error ()
   OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
     Nothing -> error ()
     Just d -> d
-  OutputDatum dat -> PlutusTx.unsafeFromBuiltinData @Label (getDatum dat)
+  OutputDatum dat -> PlutusTx.unsafeFromBuiltinData @Datum (getDatum dat)
 
 {-# INLINEABLE newValueAddr #-}
 newValueAddr :: Address -> ScriptContext -> Value
@@ -420,24 +412,19 @@ checkValue :: Address -> TokenName -> ScriptContext -> Bool
 checkValue addr tn ctx =
   checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
 
-{-# INLINEABLE isInitial #-}
-isInitial
-  :: Address -> TxOutRef -> TokenName -> ScriptContext -> Bool
-isInitial addr oref tn ctx =
-  consumes oref ctx
-    && checkDatum addr tn ctx
-    && checkValue addr tn ctx
-
 ------------------------------------------------------------------------------------------------------------------------------
 -- The Minting Policy Script
 ------------------------------------------------------------------------------------------------------------------------------
 
 {-# INLINEABLE agdaPolicy #-}
-agdaPolicy
-  :: Address -> TxOutRef -> TokenName -> () -> ScriptContext -> Bool
+agdaPolicy :: Address -> TxOutRef -> TokenName -> () -> ScriptContext -> Bool
 agdaPolicy addr oref tn _ ctx =
   if amt == 1
-    then continuingAddr addr ctx && isInitial addr oref tn ctx
+    then
+      continuingAddr addr ctx
+        && consumes oref ctx
+        && checkDatum addr tn ctx
+        && checkValue addr tn ctx
     else if amt == (-1) then not (continuingAddr addr ctx) else False
   where
     amt :: Integer
@@ -482,7 +469,7 @@ getPid p oref tn = Ledger.policyId (versionedPolicy p oref tn)
 covIdx :: CoverageIndex
 covIdx = getCovIdx $$(PlutusTx.compile [||agdaValidator||])
 
-ccode :: PlutusTx.CompiledCode (Params -> Label -> Input -> ScriptContext -> Bool)
+ccode :: PlutusTx.CompiledCode (Params -> Datum -> Redeemer -> ScriptContext -> Bool)
 ccode = $$(PlutusTx.compile [||agdaValidator||])
 
 test :: SerialisedScript

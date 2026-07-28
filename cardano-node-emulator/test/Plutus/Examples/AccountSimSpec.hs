@@ -215,7 +215,7 @@ tin = API.TxIn "b0de2873afe95a6530bf1ae88096cf43e17bb2ee669f9ba600838949ac1e08ec
 ------------------------------------------------------------------------------------------------------------------------------
 
 data Phase
-  = Initial
+  = Stopped
   | Running
   deriving (Show, Eq, Generic)
 
@@ -247,7 +247,7 @@ lookupEmpty w ((x, y) : xs) =
   if w == x then y == (Ada.toValue 0) else lookupEmpty w xs
 
 -- test model
-data AccountSimModel = AccountSimModel
+data AccountSimState = AccountSimState
   { _actualValue :: Value
   , _threadToken :: Maybe QCCM.SymToken
   , _txIn :: Maybe QCCM.SymTxIn
@@ -256,9 +256,9 @@ data AccountSimModel = AccountSimModel
   }
   deriving (Eq, Show, Generic)
 
-makeLenses ''AccountSimModel
+makeLenses ''AccountSimState
 
-options :: E.Options AccountSimModel
+options :: E.Options AccountSimState
 options =
   E.defaultOptions
     { E.initialDistribution = defInitialDist
@@ -270,8 +270,8 @@ genWallet :: QC.Gen Wallet
 genWallet = QC.elements testWallets
 
 -- actions for the model
-instance ContractModel AccountSimModel where
-  data Action AccountSimModel
+instance ContractModel AccountSimState where
+  data Action AccountSimState
     = Start Wallet
     | Open Wallet
     | Close Wallet
@@ -282,11 +282,11 @@ instance ContractModel AccountSimModel where
     deriving (Eq, Show, Generic)
 
   initialState =
-    AccountSimModel
+    AccountSimState
       { _actualValue = mempty
       , _threadToken = Nothing
       , _txIn = Nothing
-      , _phase = Initial
+      , _phase = Stopped
       , _label = []
       }
 
@@ -312,7 +312,7 @@ instance ContractModel AccountSimModel where
       wait 1
     Withdraw w v -> do
       actualValue' <- viewContractState actualValue
-      actualValue .= actualValue' <> (PlutusTx.negate v)
+      actualValue .= actualValue' PlutusTx.- v
       deposit (walletAddress w) v
       label' <- viewContractState label
       label .= insert w ((fromJust (lookup' w label')) PlutusTx.- v) label'
@@ -331,7 +331,7 @@ instance ContractModel AccountSimModel where
       label .= insert from (vF PlutusTx.- v) (insert to (vT PlutusTx.+ v) label')
       wait 1
     Stop w -> do
-      phase .= Initial
+      phase .= Stopped
       actualValue' <- viewContractState actualValue
       deposit (walletAddress w) (actualValue')
       actualValue .= mempty
@@ -340,7 +340,7 @@ instance ContractModel AccountSimModel where
 
   -- when each action is possible
   precondition s a = case a of
-    Start w -> currentPhase == Initial
+    Start w -> currentPhase == Stopped
     Open w -> currentPhase == Running && not (elem w accounts)
     Close w -> currentPhase == Running && lookupEmpty w accMap
     Withdraw w v -> currentPhase == Running && lookupGT w v accMap
@@ -359,23 +359,24 @@ instance ContractModel AccountSimModel where
     frequency
       [ (1, Start <$> genWallet)
       , (1, Open <$> genWallet)
-      , (1, Close <$> genWallet)
-      , (5, Stop <$> genWallet)
+      , (5, Close <$> genWallet)
+      , (2, Stop <$> genWallet)
       , (6, genWithdrawAction)
       ,
         ( 3
         , Deposit
             <$> genWallet
             <*> ( Ada.lovelaceValueOf
-                    <$> choose (Ada.getLovelace Ledger.minAdaTxOutEstimated, Ada.getLovelace (Ada.adaOf 100))
+                    <$> choose (0, Ada.getLovelace (Ada.adaOf 100))
+                    -- <$> choose (Ada.getLovelace Ledger.minAdaTxOutEstimated, Ada.getLovelace (Ada.adaOf 100))
                 )
         )
-      , (2, genTransferAction)
+      , (5, genTransferAction)
       ]
     where
       accounts = s ^. contractState . label
 
-      genWithdrawAction :: QC.Gen (Action AccountSimModel)
+      genWithdrawAction :: QC.Gen (Action AccountSimState)
       genWithdrawAction = do
         w <- genWallet
         let max =
@@ -385,10 +386,10 @@ instance ContractModel AccountSimModel where
               )
         pure (Withdraw w)
           <*> ( Ada.lovelaceValueOf
-                  <$> choose ((Ada.getLovelace Ledger.minAdaTxOutEstimated), max)
+                  <$> choose (0, max)
               )
 
-      genTransferAction :: QC.Gen (Action AccountSimModel)
+      genTransferAction :: QC.Gen (Action AccountSimState)
       genTransferAction = do
         w <- genWallet
         let max =
@@ -399,11 +400,11 @@ instance ContractModel AccountSimModel where
         pure (Transfer w)
           <*> genWallet
           <*> ( Ada.lovelaceValueOf
-                  <$> choose ((Ada.getLovelace Ledger.minAdaTxOutEstimated), max)
+                  <$> choose (0, max)
               )
 
 -- endpoint to run manual tests
-act :: Action AccountSimModel -> E.EmulatorM ()
+act :: Action AccountSimState -> E.EmulatorM ()
 act = \case
   Start w ->
     void $
@@ -453,7 +454,7 @@ act = \case
         tin
 
 -- describes which model action corresponds with which API transaction being submitted
-instance RunModel AccountSimModel E.EmulatorM where
+instance RunModel AccountSimState E.EmulatorM where
   perform s (Start w) translate = do
     (oref, tin) <- lift $ API.start (walletAddress w) (walletPrivateKey w)
     -- using the Symbolic function of the model to register minting data
@@ -521,11 +522,11 @@ defInitialDist =
       <$> E.knownAddresses
 
 -- property for running the QuickCheck model
-prop_AccountSim :: Actions AccountSimModel -> Property
+prop_AccountSim :: Actions AccountSimState -> Property
 prop_AccountSim = E.propRunActionsWithOptions options
 
 -- test we expect to fail
-simpleFailTest :: DL AccountSimModel ()
+simpleFailTest :: DL AccountSimState ()
 simpleFailTest = do
   action $ Start 1
   action $ Open 2
