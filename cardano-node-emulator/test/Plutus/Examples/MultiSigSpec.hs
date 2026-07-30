@@ -193,19 +193,19 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "06a09b62d920b5629e577676dbb7fac61caaef42bff3edcc91289764"
+curr = "fade0b5e4a2d377395acc104fd6fd59ef5fa397a0c786ec8a98dee19"
 
 tn' :: TokenName
 tn' = "ThreadToken"
 
 curr' :: CurrencySymbol
-curr' = "6d398fcdd992e2ced3cc2b083e98b0b6aa1e116cc230388444313388"
+curr' = "60e0473cfd214b4af56dc2b0f2e9108224bb92be1d8a59bcdf9a8646"
 
 tin :: API.TxIn
 tin = API.TxIn "b0de2873afe95a6530bf1ae88096cf43e17bb2ee669f9ba600838949ac1e08ec" (API.TxIx 5)
 
 tin' :: API.TxIn
-tin' = API.TxIn "abaad5696c7e2719b2529f22c44c8a31842d16ad250905a97d6478e98f5b7d1a" (API.TxIx 1)
+tin' = API.TxIn "c1e3734ceec1b6f7c1959def2a12a8cf7d1aaf7ee15f42e88df09513f6a6ff28" (API.TxIx 1)
 
 -- Debug Switches
 ok :: Bool

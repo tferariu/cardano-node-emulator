@@ -207,7 +207,7 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "fbb636b572a941d2544f08a75dec761ea3120c854aeba3fb129da687"
+curr = "45ae8b2f2474cb9fde4d2e7b3f6511adbbe051a2d9dcfb80fa75569e"
 
 -- Two Thread Tokens are necessary if you open two different instances of the contract
 tn' :: TokenName

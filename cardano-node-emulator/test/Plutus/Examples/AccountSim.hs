@@ -183,19 +183,13 @@ ownInput ctx = case findOwnInput ctx of
   Nothing -> error ()
   Just i -> txInInfoResolved i
 
-{-# INLINEABLE smDatum #-}
-smDatum :: Maybe V3.Datum -> Maybe Datum
-smDatum md = do
-  V3.Datum d <- md
-  PlutusTx.fromBuiltinData d
-
 {-# INLINEABLE newDatum #-}
 newDatum :: ScriptContext -> Datum
 newDatum ctx = case txOutDatum (ownOutput ctx) of
   NoOutputDatum -> error ()
-  OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
+  OutputDatumHash dh -> case findDatum dh (scriptContextTxInfo ctx) of
     Nothing -> error ()
-    Just d -> d
+    Just d -> PlutusTx.unsafeFromBuiltinData (getDatum d)
   OutputDatum d -> PlutusTx.unsafeFromBuiltinData (getDatum d)
 
 {-# INLINEABLE oldValue #-}
@@ -292,10 +286,10 @@ continuingAddr addr ctx = case filter (\i -> (txOutAddress i == (addr))) (txInfo
 newDatumAddr :: Address -> ScriptContext -> Datum
 newDatumAddr addr ctx = case txOutDatum (outputAtAddr addr ctx) of
   NoOutputDatum -> error ()
-  OutputDatumHash dh -> case smDatum $ findDatum dh (scriptContextTxInfo ctx) of
+  OutputDatumHash dh -> case findDatum dh (scriptContextTxInfo ctx) of
     Nothing -> error ()
-    Just d -> d
-  OutputDatum dat -> PlutusTx.unsafeFromBuiltinData @Datum (getDatum dat)
+    Just d -> PlutusTx.unsafeFromBuiltinData (getDatum d)
+  OutputDatum d -> PlutusTx.unsafeFromBuiltinData (getDatum d)
 
 {-# INLINEABLE newValueAddr #-}
 newValueAddr :: Address -> ScriptContext -> Value

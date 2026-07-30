@@ -188,6 +188,9 @@ fromPolicyId (API.PolicyId hash) = CurrencySymbol . Builtins.toBuiltin $ API.ser
 fromAssetName :: API.AssetName -> TokenName
 fromAssetName (API.AssetName bs) = TokenName $ Builtins.toBuiltin bs
 
+minAda = Ada.toValue 3000000
+noAda = Ada.toValue 0
+
 {-
 The token name and currency symbol needs to be extracted manually for the
 unit tests. The written off-chain code produces errors that help get the
@@ -198,7 +201,7 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "bfed96f3a7812e5f234ab9fdd94203906f9c960de6aacb8a91215b00"
+curr = "2737690b08421765980bf57bc81e6e766f0086f6da59239ea10b1364"
 
 tt :: AssetClass
 tt = assetClass curr tn
@@ -294,8 +297,8 @@ instance ContractModel AccountSimState where
   nextState a = void $ case a of
     Start w -> do
       phase .= Running
-      actualValue .= (Ada.toValue 3000000)
-      withdraw (walletAddress w) (Ada.toValue 3000000)
+      actualValue .= minAda
+      withdraw (walletAddress w) minAda
       symToken <- QCCM.createToken "thread token"
       threadToken .= Just symToken
       symTxIn <- QCCM.createTxIn "minting input"
@@ -304,7 +307,7 @@ instance ContractModel AccountSimState where
       wait 1
     Open w -> do
       label' <- viewContractState label
-      label .= insert w (Ada.toValue 0) label'
+      label .= insert w noAda label'
       wait 1
     Close w -> do
       label' <- viewContractState label
