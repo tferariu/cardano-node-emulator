@@ -303,7 +303,7 @@ instance ContractModel MultiSigState where
 
   initialState =
     MultiSigState
-      { _actualValue = mempty
+      { _actualValue = emptyValue
       , _allowedSignatories = [w5, w3, w4]
       , _requiredSignatories = (minSigs modelParams)
       , _threadToken = Nothing
@@ -340,13 +340,13 @@ instance ContractModel MultiSigState where
       paymentValue' <- viewContractState paymentValue
       actualValue .= actualValue' <> (PlutusTx.negate paymentValue')
       deposit (walletAddress (fromJust address)) paymentValue'
-      paymentValue .= mempty
+      paymentValue .= emptyValue
       wait 1
     Cancel w -> do
       phase .= Holding
       actualSignatories .= []
       paymentTarget .= Nothing
-      paymentValue .= mempty
+      paymentValue .= emptyValue
       deadline .= Nothing
       wait 1
     Start w v -> do
@@ -363,7 +363,7 @@ instance ContractModel MultiSigState where
       phase .= Initial
       actualValue' <- viewContractState actualValue
       deposit (walletAddress w) (actualValue')
-      actualValue .= mempty
+      actualValue .= emptyValue
       threadToken .= Nothing
       actualSignatories .= []
       wait 1

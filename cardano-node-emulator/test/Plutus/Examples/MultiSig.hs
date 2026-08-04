@@ -138,18 +138,6 @@ data Label
   = Holding
   | Collecting Value PubKeyHash Integer [PubKeyHash]
 
--- Inlineable instance of equality needs to be defined when it cannot be derived
-{-# INLINEABLE iEq #-}
-iEq :: Label -> Label -> Bool
-iEq Holding Holding = True
-iEq Holding (Collecting _ _ _ _) = False
-iEq (Collecting _ _ _ _) Holding = False
-iEq (Collecting v pkh d sigs) (Collecting v' pkh' d' sigs') = v == v' && pkh == pkh' && d == d' && sigs == sigs'
-
-instance Eq Label where
-  {-# INLINEABLE (==) #-}
-  b == c = iEq b c
-
 type Datum = (AssetClass, Label)
 
 data Redeemer
