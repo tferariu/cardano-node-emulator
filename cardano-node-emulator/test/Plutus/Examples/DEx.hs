@@ -328,19 +328,18 @@ agdaValidator par (tok, lab) red ctx =
 ------------------------------------------------------------------------------------------------------------------------------
 
 smTypedValidator :: Params -> V3.TypedValidator DEx
-smTypedValidator = go
+smTypedValidator =
+  V3.mkTypedValidatorParam @DEx
+    $$(PlutusTx.compile [||agdaValidator||])
+    $$(PlutusTx.compile [||wrap||])
   where
-    go =
-      V3.mkTypedValidatorParam @DEx
-        $$(PlutusTx.compile [||agdaValidator||])
-        $$(PlutusTx.compile [||wrap||])
     wrap = Scripts.mkUntypedValidator
 
 mkAddress :: Params -> Ledger.CardanoAddress
 mkAddress = validatorCardanoAddress testnet . smTypedValidator
 
-mkOtherAddress :: Params -> Address
-mkOtherAddress = V3.validatorAddress . smTypedValidator
+mkA2 :: Params -> Address
+mkA2 = V3.validatorAddress . smTypedValidator
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- Generic helper functions that get compiled as part of the Minting Policy Script
@@ -434,7 +433,7 @@ policy p oref tn =
     $ $$( PlutusTx.compile
             [||\addr' oref' tn' -> Scripts.mkUntypedMintingPolicy $ agdaPolicy addr' oref' tn'||]
         )
-    `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 (mkOtherAddress p)
+    `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 (mkA2 p)
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 oref
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 tn
 

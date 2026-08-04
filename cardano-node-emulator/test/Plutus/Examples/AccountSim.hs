@@ -441,8 +441,8 @@ smTypedValidator =
 mkAddress :: Ledger.CardanoAddress
 mkAddress = validatorCardanoAddress testnet smTypedValidator
 
-mkOtherAddress :: Address
-mkOtherAddress = V3.validatorAddress smTypedValidator
+mkA2 :: Address
+mkA2 = V3.validatorAddress smTypedValidator
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- Thread Token functions that get compiled as part of the Minting Policy Script
@@ -491,7 +491,7 @@ policy oref tn =
     $ $$( PlutusTx.compile
             [||\addr' oref' tn' -> Scripts.mkUntypedMintingPolicy $ agdaPolicy addr' oref' tn'||]
         )
-    `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 mkOtherAddress
+    `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 mkA2
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 oref
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 tn
 
