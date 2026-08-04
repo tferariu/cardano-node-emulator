@@ -188,9 +188,6 @@ fromPolicyId (API.PolicyId hash) = CurrencySymbol . Builtins.toBuiltin $ API.ser
 fromAssetName :: API.AssetName -> TokenName
 fromAssetName (API.AssetName bs) = TokenName $ Builtins.toBuiltin bs
 
-minAda = Ada.toValue 3000000
-noAda = Ada.toValue 0
-
 {-
 The token name and currency symbol needs to be extracted manually for the
 unit tests. The written off-chain code produces errors that help get the
@@ -286,7 +283,7 @@ instance ContractModel AccountSimState where
 
   initialState =
     AccountSimState
-      { _actualValue = mempty
+      { _actualValue = emptyValue
       , _threadToken = Nothing
       , _txIn = Nothing
       , _phase = Stopped
@@ -297,8 +294,8 @@ instance ContractModel AccountSimState where
   nextState a = void $ case a of
     Start w -> do
       phase .= Running
-      actualValue .= minAda
-      withdraw (walletAddress w) minAda
+      actualValue .= minValue
+      withdraw (walletAddress w) minValue
       symToken <- QCCM.createToken "thread token"
       threadToken .= Just symToken
       symTxIn <- QCCM.createTxIn "minting input"
@@ -307,7 +304,7 @@ instance ContractModel AccountSimState where
       wait 1
     Open w -> do
       label' <- viewContractState label
-      label .= insert w noAda label'
+      label .= insert w emptyValue label'
       wait 1
     Close w -> do
       label' <- viewContractState label
@@ -337,7 +334,7 @@ instance ContractModel AccountSimState where
       phase .= Stopped
       actualValue' <- viewContractState actualValue
       deposit (walletAddress w) (actualValue')
-      actualValue .= mempty
+      actualValue .= emptyValue
       threadToken .= Nothing
       wait 1
 
@@ -377,13 +374,13 @@ instance ContractModel AccountSimState where
       , (5, genTransferAction)
       ]
     where
-      accounts = s ^. contractState . label
+      accMap = s ^. contractState . label
 
       genWithdrawAction :: QC.Gen (Action AccountSimState)
       genWithdrawAction = do
         w <- genWallet
         let max =
-              ( case (lookup w accounts) of
+              ( case (lookup w accMap) of
                   Just v -> valueOf v Ada.adaSymbol Ada.adaToken
                   Nothing -> 0
               )
@@ -396,7 +393,7 @@ instance ContractModel AccountSimState where
       genTransferAction = do
         w <- genWallet
         let max =
-              ( case (lookup w accounts) of
+              ( case (lookup w accMap) of
                   Just v -> valueOf v Ada.adaSymbol Ada.adaToken
                   Nothing -> 0
               )

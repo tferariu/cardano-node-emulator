@@ -308,7 +308,7 @@ instance ContractModel MultiSigState where
       , _requiredSignatories = (minSigs modelParams)
       , _threadToken = Nothing
       , _phase = Initial
-      , _paymentValue = mempty
+      , _paymentValue = emptyValue
       , _paymentTarget = Nothing
       , _deadline = Nothing
       , _actualSignatories = []

@@ -276,7 +276,7 @@ data Phase
   | Running
   deriving (Show, Eq, Generic)
 
-data DExModel = DExModel
+data DExState = DExState
   { _actualValue :: Value
   , _buyAC :: Maybe AssetClass
   , _sellAC :: Maybe AssetClass
@@ -289,7 +289,7 @@ data DExModel = DExModel
   }
   deriving (Eq, Show, Generic)
 
-makeLenses ''DExModel
+makeLenses ''DExState
 
 defInitialDist :: Map Ledger.CardanoAddress Value.Value
 defInitialDist =
@@ -300,7 +300,7 @@ defInitialDist =
       ))
       <$> E.knownAddresses
 
-options :: E.Options DExModel
+options :: E.Options DExState
 options =
   E.defaultOptions
     { E.initialDistribution = defInitialDist
@@ -332,8 +332,8 @@ getCount w [] = 0
 getCount w ((x, y) : xs) =
   if w == x then y else getCount w xs
 
-instance ContractModel DExModel where
-  data Action DExModel
+instance ContractModel DExState where
+  data Action DExState
     = Update Wallet Value PlutusTx.Ratio.Rational
     | Exchange Integer Wallet
     | Start Wallet Value PlutusTx.Ratio.Rational AssetClass AssetClass
@@ -342,7 +342,7 @@ instance ContractModel DExModel where
     deriving (Eq, Show, Generic)
 
   initialState =
-    DExModel
+    DExState
       { _actualValue = mempty
       , _buyAC = Nothing
       , _sellAC = Nothing
@@ -363,7 +363,6 @@ instance ContractModel DExModel where
       wait 1
     Update w v r -> do
       actualValue' <- viewContractState actualValue
-
       withdraw
         (walletAddress w)
         (v <> (PlutusTx.negate actualValue'))
@@ -386,7 +385,6 @@ instance ContractModel DExModel where
       deposit (walletAddress w) (paymentValue' (fromJust sellCurr') amt)
       withdraw (walletAddress w) (lovelaceValue 3_000_000)
       withdraw (walletAddress w) (paymentValue' (fromJust buyCurr') (getPayAmt amt (fromJust rate')))
-
       deposit
         (walletAddress (fromJust owner'))
         (paymentValue' (fromJust buyCurr') (getPayAmt amt (fromJust rate')))
@@ -420,7 +418,7 @@ instance ContractModel DExModel where
       count .= increment w count'
       actualValue' <- viewContractState actualValue
       deposit (walletAddress w) (actualValue')
-      actualValue .= mempty
+      actualValue .= emptyValue
       threadToken .= Nothing
       txIn .= Nothing
       owner .= Nothing
@@ -485,7 +483,7 @@ instance ContractModel DExModel where
         pure
           (Ada.lovelaceValueOf ada <> paymentValue (fst (unAssetClass curr)) (snd (unAssetClass curr)) amt)
 
-act :: Action DExModel -> E.EmulatorM ()
+act :: Action DExState -> E.EmulatorM ()
 act = \case
   Update w v r ->
     void $
@@ -528,7 +526,7 @@ act = \case
         (walletAddress w)
         (walletPrivateKey w)
 
-instance RunModel DExModel E.EmulatorM where
+instance RunModel DExState E.EmulatorM where
   perform s (Start w v r bac sac) translate = do
     (oref, tin, tout) <- lift $ start (walletAddress w) (walletPrivateKey w) modelParams v r False
     QCCM.registerToken "thread token" (toAssetId (makeTT oref))
@@ -573,7 +571,7 @@ instance RunModel DExModel E.EmulatorM where
 -- Tests
 ------------------------------------------------------------------------------------------------------------------------------
 
-prop_DEx :: Actions DExModel -> Property
+prop_DEx :: Actions DExState -> Property
 prop_DEx = E.propRunActionsWithOptions options
 
 tests :: TestTree

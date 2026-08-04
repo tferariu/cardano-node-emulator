@@ -37,6 +37,8 @@ module Plutus.Examples.MultiSig (
   curSymbol,
   mintingHash,
   getPid,
+  minValue,
+  emptyValue,
 
   -- * Coverage
   covIdx,
