@@ -272,7 +272,7 @@ paymentValue' ac amt = Value.singleton (toPolicyId (fst (unAssetClass ac))) (toA
 ------------------------------------------------------------------------------------------------------------------------------
 
 data Phase
-  = Initial
+  = Stopped
   | Running
   deriving (Show, Eq, Generic)
 
@@ -348,7 +348,7 @@ instance ContractModel DExState where
       , _sellAC = Nothing
       , _threadToken = Nothing
       , _txIn = Nothing
-      , _phase = Initial
+      , _phase = Stopped
       , _rate = Nothing
       , _owner = Nothing
       , _count = [(w1, 0), (w2, 0), (w3, 0), (w4, 0), (w5, 0), (w6, 0)]
@@ -414,7 +414,7 @@ instance ContractModel DExState where
       wait 1
     Stop w -> do
       count' <- viewContractState count
-      phase .= Initial
+      phase .= Stopped
       count .= increment w count'
       actualValue' <- viewContractState actualValue
       deposit (walletAddress w) (actualValue')
@@ -435,7 +435,7 @@ instance ContractModel DExState where
         && (w /= owner')
         && ((getCount w count') < 3)
         && (amt' > amt + 500)
-    Start w v r bac sac -> currentPhase == Initial && ((getCount w count') < 3)
+    Start w v r bac sac -> currentPhase == Stopped && ((getCount w count') < 3)
     Stop w -> currentPhase == Running && (w == owner') && ((getCount w count') < 3)
     where
       currentPhase = s ^. contractState . phase

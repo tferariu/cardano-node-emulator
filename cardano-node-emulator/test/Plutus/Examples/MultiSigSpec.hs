@@ -256,7 +256,7 @@ fromAssetName (API.AssetName bs) = TokenName $ Builtins.toBuiltin bs
 ------------------------------------------------------------------------------------------------------------------------------
 
 data Phase
-  = Initial
+  = Stopped
   | Holding
   | Collecting
   deriving (Show, Eq, Generic)
@@ -307,7 +307,7 @@ instance ContractModel MultiSigState where
       , _allowedSignatories = [w5, w3, w4]
       , _requiredSignatories = (minSigs modelParams)
       , _threadToken = Nothing
-      , _phase = Initial
+      , _phase = Stopped
       , _paymentValue = emptyValue
       , _paymentTarget = Nothing
       , _deadline = Nothing
@@ -360,7 +360,7 @@ instance ContractModel MultiSigState where
       actualSignatories .= []
       wait 1
     Stop w -> do
-      phase .= Initial
+      phase .= Stopped
       actualValue' <- viewContractState actualValue
       deposit (walletAddress w) (actualValue')
       actualValue .= emptyValue
@@ -373,7 +373,7 @@ instance ContractModel MultiSigState where
     Add w -> currentPhase == Collecting && (elem w sigs)
     Pay w -> currentPhase == Collecting && ((length actualSigs) >= (fromIntegral min)) && w == receiver
     Cancel w -> currentPhase == Collecting && ((d + 2000) < timeInt)
-    Start w v -> currentPhase == Initial && (v `geq` x2MinValue)
+    Start w v -> currentPhase == Stopped && (v `geq` x2MinValue)
     Stop w -> currentPhase == Holding && ((Ada.toValue Ledger.minAdaTxOutEstimated) `gt` currentValue)
     where
       currentPhase = s ^. contractState . phase
