@@ -44,6 +44,7 @@ import Cardano.Node.Emulator.Internal.Node.TimeSlot qualified as TimeSlot
 import Cardano.Node.Emulator.Test (
   checkPredicateOptions,
   hasValidatedTransactionCountOfTotal,
+  propSanityCheckModel,
   walletFundsChange,
   (.&&.),
  )
@@ -531,9 +532,51 @@ simpleFailTest = do
   action $ Start 1
   action $ Open 2
   action $ Close 3
-
 prop_Check :: Property
 prop_Check = forAllDL simpleFailTest prop_AccountSim
+
+liquidity :: DL AccountSimState ()
+liquidity = do
+  anyActions_
+  accMap <- viewContractState label
+  phase <- viewContractState phase
+  sequence_ [action $ Withdraw w v | (w, v) <- accMap]
+  sequence_ [action $ Close w | (w, v) <- accMap]
+  when (phase == Running) $ action $ Stop 1
+  assertModel "Should have no locked value" $ symIsZero . lockedValue
+
+prop_Liquidity :: Property
+prop_Liquidity = forAllDL liquidity prop_AccountSim
+
+fidelity :: QCCM.ModelState AccountSimState -> Bool
+fidelity s = case currentPhase of
+  Stopped -> currentValue == emptyValue && currentLabel == []
+  Running -> (foldl (<>) minValue (map snd currentLabel)) == currentValue
+  where
+    currentLabel = s ^. contractState . label
+    currentValue = s ^. contractState . actualValue
+    currentPhase = s ^. contractState . phase
+
+check_Fidelity :: DL AccountSimState ()
+check_Fidelity = do
+  anyActions_
+  assertModel "Should have matching value and internal map" $ fidelity
+
+prop_Fidelity :: Property
+prop_Fidelity = forAllDL check_Fidelity prop_AccountSim
+
+validity :: QCCM.ModelState AccountSimState -> Bool
+validity s = all (\x -> geq x emptyValue) (map snd currentLabel)
+  where
+    currentLabel = s ^. contractState . label
+
+check_Validity :: DL AccountSimState ()
+check_Validity = do
+  anyActions_
+  assertModel "Should have only positive internal values" $ validity
+
+prop_Validity :: Property
+prop_Validity = forAllDL check_Validity prop_AccountSim
 
 -- several manual tests followed by QuickCheck generated model tests
 tests :: TestTree
@@ -698,6 +741,10 @@ tests =
           act $ Withdraw 5 (Ada.adaValueOf 10)
           act $ Close 5
           act $ Stop 1
+    , --    , testProperty "No Locked Funds" prop_NoLockedFunds
+      testProperty "Validity" prop_Validity
+    , testProperty "Fidelity" prop_Fidelity
+    , testProperty "Liquidity" prop_Liquidity
     , testProperty "QuickCheck ContractModel" $ QC.withMaxSuccess 100 (prop_AccountSim)
     , testProperty "QuickCheck CancelDL" (QC.expectFailure prop_Check)
     ]
