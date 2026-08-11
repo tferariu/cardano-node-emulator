@@ -38,15 +38,12 @@ module Plutus.Examples.MultiSig (
   mintingHash,
   getPid,
   minValue,
+  x2MinValue,
+  writeUplc,
   emptyValue,
 
   -- * Coverage
   covIdx,
-
-  -- * testing
-  minValue,
-  x2MinValue,
-  writeUplc,
 ) where
 
 import Cardano.Api qualified as C

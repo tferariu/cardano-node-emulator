@@ -24,6 +24,6 @@ tests =
   testGroup
     "all tests"
     [ AccountSimSpec.tests
-    -- , MultiSigSpec.tests
-    -- , DExSpec.tests
+    , MultiSigSpec.tests
+    , DExSpec.tests
     ]

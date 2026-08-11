@@ -551,7 +551,7 @@ prop_Liquidity = forAllDL liquidity prop_AccountSim
 fidelity :: QCCM.ModelState AccountSimState -> Bool
 fidelity s = case currentPhase of
   Stopped -> currentValue == emptyValue && currentLabel == []
-  Running -> (foldl (<>) minValue (map snd currentLabel)) == currentValue
+  Running -> (foldl (PlutusTx.+) minValue (map snd currentLabel)) == currentValue
   where
     currentLabel = s ^. contractState . label
     currentValue = s ^. contractState . actualValue
@@ -741,8 +741,7 @@ tests =
           act $ Withdraw 5 (Ada.adaValueOf 10)
           act $ Close 5
           act $ Stop 1
-    , --    , testProperty "No Locked Funds" prop_NoLockedFunds
-      testProperty "Validity" prop_Validity
+    , testProperty "Validity" prop_Validity
     , testProperty "Fidelity" prop_Fidelity
     , testProperty "Liquidity" prop_Liquidity
     , testProperty "QuickCheck ContractModel" $ QC.withMaxSuccess 100 (prop_AccountSim)

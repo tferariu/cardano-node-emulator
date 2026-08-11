@@ -34,6 +34,7 @@ module Plutus.Examples.DEx (
   curSymbol,
   mintingHash,
   getPid,
+  checkRational,
 
   -- * Coverage
   covIdx,

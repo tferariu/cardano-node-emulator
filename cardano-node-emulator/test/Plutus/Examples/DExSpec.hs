@@ -428,7 +428,7 @@ instance ContractModel DExState where
       wait 1
 
   precondition s a = case a of
-    Unite w -> ((getCount w count') >= 3)
+    Unite w -> True -- ((getCount w count') >= 3)
     Update w v r -> currentPhase == Running && (w == owner') && ((getCount w count') < 3)
     Exchange amt w ->
       currentPhase == Running
@@ -573,6 +573,36 @@ instance RunModel DExState E.EmulatorM where
 
 prop_DEx :: Actions DExState -> Property
 prop_DEx = E.propRunActionsWithOptions options
+
+liquidity :: DL DExState ()
+liquidity = do
+  anyActions_
+  phase <- viewContractState phase
+  owner <- viewContractState owner
+  case owner of
+    Nothing -> assertModel "Should have no locked value" $ symIsZero . lockedValue
+    Just wallet -> do
+      action $ Unite wallet
+      action $ Stop wallet
+  assertModel "Should have no locked value" $ symIsZero . lockedValue
+
+prop_Liquidity :: Property
+prop_Liquidity = forAllDL liquidity prop_DEx
+
+validity :: QCCM.ModelState DExState -> Bool
+validity s = case currentRate of
+  Nothing -> True
+  Just r -> checkRational r
+  where
+    currentRate = s ^. contractState . rate
+
+check_Validity :: DL DExState ()
+check_Validity = do
+  anyActions_
+  assertModel "Should have a reasonable exchange rate" $ validity
+
+prop_Validity :: Property
+prop_Validity = forAllDL check_Validity prop_DEx
 
 tests :: TestTree
 tests =
@@ -840,6 +870,8 @@ tests =
               btok
           act $ Exchange 598 3
           act $ Exchange 1051 2
+    , testProperty "Validity" prop_Validity
+    , testProperty "Liquidity" prop_Liquidity
     , testProperty "QuickCheck ContractModel" $ QC.withMaxSuccess 100 (QC.noShrinking prop_DEx)
     ]
 

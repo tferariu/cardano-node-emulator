@@ -369,15 +369,15 @@ instance ContractModel MultiSigState where
       wait 1
 
   precondition s a = case a of
-    Propose w1 v w2 d -> currentPhase == Holding && (currentValue `geq` v) && (v `geq` minValue)
+    Propose w1 v w2 d -> currentPhase == Holding && (currentValue `geq` (v PlutusTx.+ minValue)) && (v `geq` minValue)
     Add w -> currentPhase == Collecting && (elem w sigs)
-    Pay w -> currentPhase == Collecting && ((length actualSigs) >= (fromIntegral min)) && w == receiver
+    Pay w -> currentPhase == Collecting && ((length actualSigs) >= (fromIntegral min)) -- && w == receiver
     Cancel w -> currentPhase == Collecting && ((d + 2000) < timeInt)
     Start w v -> currentPhase == Stopped && (v `geq` x2MinValue)
-    Stop w -> currentPhase == Holding && ((Ada.toValue Ledger.minAdaTxOutEstimated) `gt` currentValue)
+    Stop w -> currentPhase == Holding && (x2MinValue `gt` currentValue)
     where
       currentPhase = s ^. contractState . phase
-      currentValue = (s ^. contractState . actualValue) <> (PlutusTx.negate (Ada.toValue 3000000)) -- liquid value
+      currentValue = (s ^. contractState . actualValue) -- liquid value
       sigs = s ^. contractState . allowedSignatories
       actualSigs = s ^. contractState . actualSignatories
       min = s ^. contractState . requiredSignatories
@@ -603,6 +603,64 @@ simpleVestTest = do
 prop_Check :: Property
 prop_Check = forAllDL simpleVestTest prop_MultiSig
 
+liquidity :: DL MultiSigState ()
+liquidity = do
+  anyActions_
+  phase <- viewContractState phase
+  authSigs <- viewContractState allowedSignatories
+  case phase of
+    Stopped -> assertModel "Should have no locked value" $ symIsZero . lockedValue
+    Holding -> do
+      currentValue <- viewContractState actualValue
+      case (x2MinValue `gt` currentValue) of
+        True -> action $ Stop w1
+        False -> do
+          action $ Propose w1 (currentValue PlutusTx.- minValue) w1 0
+          sequence_ [action $ Add w | w <- authSigs]
+          action $ Pay w1
+          action $ Stop w1
+    Collecting -> do
+      sequence_ [action $ Add w | w <- authSigs]
+      action $ Pay w1
+      currentValue <- viewContractState actualValue
+      case (x2MinValue `gt` currentValue) of
+        True -> action $ Stop w2
+        False -> do
+          action $ Propose w2 (currentValue PlutusTx.- minValue) w2 0
+          sequence_ [action $ Add w | w <- authSigs]
+          action $ Pay w2
+          action $ Stop w2
+  assertModel "Should have no locked value" $ symIsZero . lockedValue
+
+prop_Liquidity :: Property
+prop_Liquidity = forAllDL liquidity prop_MultiSig
+
+noDups :: [Wallet] -> Bool
+noDups [] = True
+noDups (x : xs) = not (elem x xs) && noDups xs
+
+validity :: QCCM.ModelState MultiSigState -> Bool
+validity s = case currentPhase of
+  Stopped -> True
+  Holding -> True
+  Collecting ->
+    geq currentValue (currentPayment PlutusTx.+ minValue)
+      && geq currentPayment minValue
+      && noDups currentSigs
+  where
+    currentPhase = s ^. contractState . phase
+    currentValue = s ^. contractState . actualValue
+    currentPayment = s ^. contractState . paymentValue
+    currentSigs = s ^. contractState . actualSignatories
+
+check_Validity :: DL MultiSigState ()
+check_Validity = do
+  anyActions_
+  assertModel "Should have no duplicate sigs and reasonable payment" $ validity
+
+prop_Validity :: Property
+prop_Validity = forAllDL check_Validity prop_MultiSig
+
 tests :: TestTree
 tests =
   testGroup
@@ -750,6 +808,8 @@ tests =
           act $ Add 4
           act $ Add 5
           act $ Add 3
+    , testProperty "Validity" prop_Validity
+    , testProperty "Liquidity" prop_Liquidity
     , testProperty "QuickCheck ContractModel" $ QC.withMaxSuccess 100 (QC.noShrinking prop_MultiSig)
     ]
 
