@@ -86,6 +86,9 @@ import PlutusTx.Prelude qualified as PlutusTx
 -- Helper functions for translating between types and getting desired components
 ------------------------------------------------------------------------------------------------------------------------------
 
+par :: Params
+par = ()
+
 toTxOutValue :: Value -> C.TxOutValue C.ConwayEra
 toTxOutValue = either (error . show) C.toCardanoTxOutValue . C.toCardanoValue
 
@@ -115,16 +118,13 @@ toValidityRange slotConfig =
   either (error . show) id . C.toCardanoValidityRange . posixTimeRangeToContainedSlotRange slotConfig
 
 threadTokenValue :: TxOutRef -> TokenName -> C.AssetName -> C.Value
-threadTokenValue oref tn an = C.valueFromList [(C.AssetId (getPid oref tn) an, C.Quantity 1)]
+threadTokenValue oref tn an = C.valueFromList [(C.AssetId (getPid par oref tn) an, C.Quantity 1)]
 
 burnTokenValue :: TxOutRef -> TokenName -> C.AssetName -> C.Value
-burnTokenValue oref tn an = C.valueFromList [(C.AssetId (getPid oref tn) an, C.Quantity (-1))]
+burnTokenValue oref tn an = C.valueFromList [(C.AssetId (getPid par oref tn) an, C.Quantity (-1))]
 
 burnTokenValue' :: AssetClass -> C.Value
 burnTokenValue' ac = C.valueFromList [(toAssetId ac, C.Quantity (-1))]
-
-lovelaces :: Value -> Integer
-lovelaces v = assetClassValueOf v (AssetClass (adaSymbol, adaToken))
 
 cardanoTxOutDatum :: forall d. (FromData d) => C.TxOut C.CtxUTxO C.ConwayEra -> Maybe d
 cardanoTxOutDatum (C.TxOut _aie _tov tod _rs) =
@@ -187,11 +187,11 @@ mkStartTx wallet = do
   -- create the Thread Token
   let tn = "ThreadToken"
       an = "ThreadToken"
-      cs = curSymbol oref tn
+      cs = curSymbol par oref tn
       tt = assetClass cs tn
 
   -- make the smart contract output
-  let smAddress = mkAddress
+  let smAddress = mkAddress par
       txOut =
         C.TxOut
           smAddress
@@ -207,12 +207,12 @@ mkStartTx wallet = do
   let mintValue = threadTokenValue oref tn an
       mintWitness =
         either (error . show) id $
-          C.toCardanoMintWitness redeemer Nothing (Just (versionedPolicy oref tn))
+          C.toCardanoMintWitness redeemer Nothing (Just (versionedPolicy par oref tn))
       txMintValue =
         C.TxMintValue
           C.MaryEraOnwardsConway
           (mintValue)
-          (C.BuildTxWith (Map.singleton (getPid oref tn) mintWitness))
+          (C.BuildTxWith (Map.singleton (getPid par oref tn) mintWitness))
 
   -- make the transaction body
   let utx =
@@ -247,7 +247,7 @@ mkOpenTx
   -> AssetClass
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex)
 mkOpenTx wallet tt = do
-  let smAddress = mkAddress
+  let smAddress = mkAddress par
       pkh = Ledger.PaymentPubKeyHash $ fromJust $ Ledger.cardanoPubKeyHash wallet
   unspentOutputs <- E.utxosAt smAddress
   slotConfig <- asks pSlotConfig
@@ -291,7 +291,7 @@ mkOpenTx wallet tt = do
     redeemer = toHashableScriptData (Open (unPaymentPubKeyHash pkh))
     witnessHeader =
       C.toCardanoTxInScriptWitnessHeader
-        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator))
+        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator par))
     witness =
       C.BuildTxWith $
         C.ScriptWitness C.ScriptWitnessForSpending $
@@ -331,7 +331,7 @@ mkCloseTx
   -> AssetClass
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex)
 mkCloseTx wallet tt = do
-  let smAddress = mkAddress
+  let smAddress = mkAddress par
       pkh = Ledger.PaymentPubKeyHash $ fromJust $ Ledger.cardanoPubKeyHash wallet
   unspentOutputs <- E.utxosAt smAddress
   slotConfig <- asks pSlotConfig
@@ -365,7 +365,7 @@ mkCloseTx wallet tt = do
     redeemer = toHashableScriptData (Close (unPaymentPubKeyHash pkh))
     witnessHeader =
       C.toCardanoTxInScriptWitnessHeader
-        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator))
+        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator par))
     witness =
       C.BuildTxWith $
         C.ScriptWitness C.ScriptWitnessForSpending $
@@ -406,7 +406,7 @@ mkWithdrawTx
   -> AssetClass
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex)
 mkWithdrawTx wallet val tt = do
-  let smAddress = mkAddress
+  let smAddress = mkAddress par
       pkh = Ledger.PaymentPubKeyHash $ fromJust $ Ledger.cardanoPubKeyHash wallet
   unspentOutputs <- E.utxosAt smAddress
   slotConfig <- asks pSlotConfig
@@ -450,7 +450,7 @@ mkWithdrawTx wallet val tt = do
     redeemer = toHashableScriptData (Withdraw (unPaymentPubKeyHash pkh) val)
     witnessHeader =
       C.toCardanoTxInScriptWitnessHeader
-        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator))
+        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator par))
     witness =
       C.BuildTxWith $
         C.ScriptWitness C.ScriptWitnessForSpending $
@@ -492,7 +492,7 @@ mkDepositTx
   -> AssetClass
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex)
 mkDepositTx wallet val tt = do
-  let smAddress = mkAddress
+  let smAddress = mkAddress par
       pkh = Ledger.PaymentPubKeyHash $ fromJust $ Ledger.cardanoPubKeyHash wallet
   unspentOutputs <- E.utxosAt smAddress
   slotConfig <- asks pSlotConfig
@@ -536,7 +536,7 @@ mkDepositTx wallet val tt = do
     redeemer = toHashableScriptData (Deposit (unPaymentPubKeyHash pkh) val)
     witnessHeader =
       C.toCardanoTxInScriptWitnessHeader
-        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator))
+        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator par))
     witness =
       C.BuildTxWith $
         C.ScriptWitness C.ScriptWitnessForSpending $
@@ -580,7 +580,7 @@ mkTransferTx
   -> AssetClass
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex)
 mkTransferTx wallet wallet' val tt = do
-  let smAddress = mkAddress
+  let smAddress = mkAddress par
       pkh = Ledger.PaymentPubKeyHash $ fromJust $ Ledger.cardanoPubKeyHash wallet
       pkh' = Ledger.PaymentPubKeyHash $ fromJust $ Ledger.cardanoPubKeyHash wallet'
   unspentOutputs <- E.utxosAt smAddress
@@ -629,7 +629,7 @@ mkTransferTx wallet wallet' val tt = do
     redeemer = toHashableScriptData (Transfer (unPaymentPubKeyHash pkh) (unPaymentPubKeyHash pkh') val)
     witnessHeader =
       C.toCardanoTxInScriptWitnessHeader
-        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator))
+        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator par))
     witness =
       C.BuildTxWith $
         C.ScriptWitness C.ScriptWitnessForSpending $
@@ -672,7 +672,7 @@ mkStopTx
   -> C.TxIn
   -> m (C.CardanoBuildTx, Ledger.UtxoIndex)
 mkStopTx tt tin = do
-  let smAddress = mkAddress
+  let smAddress = mkAddress par
   unspentOutputs <- E.utxosAt smAddress
   slotConfig <- asks pSlotConfig
   current <- fst <$> E.currentTimeRange
@@ -698,7 +698,7 @@ mkStopTx tt tin = do
     redeemer = toHashableScriptData (Stop)
     witnessHeader =
       C.toCardanoTxInScriptWitnessHeader
-        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator))
+        (Ledger.getValidator <$> Scripts.vValidatorScript (smTypedValidator par))
     witness =
       C.BuildTxWith $
         C.ScriptWitness C.ScriptWitnessForSpending $
@@ -713,12 +713,12 @@ mkStopTx tt tin = do
     mintValue = burnTokenValue oref tn an
     mintWitness =
       either (error . show) id $
-        C.toCardanoMintWitness (V3.Redeemer (toBuiltinData ())) Nothing (Just (versionedPolicy oref tn))
+        C.toCardanoMintWitness (V3.Redeemer (toBuiltinData ())) Nothing (Just (versionedPolicy par oref tn))
     txMintValue =
       C.TxMintValue
         C.MaryEraOnwardsConway
         (mintValue)
-        (C.BuildTxWith (Map.singleton (getPid oref tn) mintWitness))
+        (C.BuildTxWith (Map.singleton (getPid par oref tn) mintWitness))
     utx =
       E.emptyTxBodyContent
         { C.txIns = txIns

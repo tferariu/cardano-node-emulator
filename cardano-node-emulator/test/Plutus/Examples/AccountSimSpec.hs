@@ -68,7 +68,14 @@ import Ledger qualified
 import Ledger.Tx.CardanoAPI (fromCardanoSlotNo)
 import Ledger.Typed.Scripts qualified as Scripts
 import Ledger.Value.CardanoAPI qualified as Value
-import Plutus.Examples.AccountSim hiding (Datum (..), Redeemer (..), delete, insert, lookup)
+import Plutus.Examples.AccountSim hiding (
+  Datum (..),
+  Label (..),
+  Redeemer (..),
+  delete,
+  insert,
+  lookup,
+ )
 import Plutus.Examples.AccountSim qualified as Impl
 import Plutus.Examples.AccountSimAPI qualified as API
 import Plutus.Script.Utils.Ada qualified as Ada
@@ -199,13 +206,16 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "2737690b08421765980bf57bc81e6e766f0086f6da59239ea10b1364"
+curr = "21994dbf461c31a843ceca749351415b1b5f1ff804a83e6e14ce76d5"
 
 tt :: AssetClass
 tt = assetClass curr tn
 
+par :: Params
+par = ()
+
 makeTT :: Ledger.TxOutRef -> AssetClass
-makeTT oref = assetClass (curSymbol oref tn) tn
+makeTT oref = assetClass (curSymbol par oref tn) tn
 
 -- Similarly the TxIn of the UTxO spent to guarantee Thread Token Uniqueness is baked in
 tin :: API.TxIn

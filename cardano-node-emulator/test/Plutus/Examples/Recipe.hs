@@ -16,7 +16,7 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
-module Plutus.Examples.DEx where
+module Plutus.Examples.Recipe where
 
 import Cardano.Api qualified as C
 import Cardano.Api.Shelley qualified as C
@@ -98,95 +98,166 @@ import UntypedPlutusCore qualified as UPLC
 import UntypedPlutusCore.Evaluation.Machine.Cek qualified as UPLC
 import Prelude (IO, Show (..), String, writeFile)
 
+{-# INLINEABLE validRange #-}
+validRange :: ScriptContext -> Interval POSIXTime
+validRange ctx = txInfoValidRange (scriptContextTxInfo ctx)
+
 type Natural = Integer
 
-data Label = Label {ratio :: Rational, owner :: PubKeyHash}
+data Label
+  = Holding
+  | Collecting Value PubKeyHash Integer [PubKeyHash]
 
 PlutusTx.unstableMakeIsData ''Label
 PlutusTx.makeLift ''Label
 
-{-# INLINEABLE eqLabel #-}
-eqLabel :: Label -> Label -> Bool
-eqLabel b c = ratio b == ratio c && owner b == owner c
-
-instance Eq Label where
-  (==) = eqLabel
-
 type Datum = (AssetClass, Label)
 
 data Redeemer
-  = Update Value Rational
-  | Exchange Integer PubKeyHash
+  = Propose Value PubKeyHash Integer
+  | Add PubKeyHash
+  | Pay
+  | Cancel
   | Stop
 
 PlutusTx.unstableMakeIsData ''Redeemer
 PlutusTx.makeLift ''Redeemer
 
-data Params = Params {sellCurr :: AssetClass, buyCurr :: AssetClass}
+data Params = Params
+  { authSigs :: [PubKeyHash]
+  , minSigs :: Natural
+  , maxWait :: Integer
+  }
 
 PlutusTx.unstableMakeIsData ''Params
 PlutusTx.makeLift ''Params
 
-{-# INLINEABLE checkRational #-}
-checkRational :: Rational -> Bool
-checkRational r = numerator r > 0 && denominator r > 0
+{-# INLINEABLE insert #-}
+insert :: PubKeyHash -> [PubKeyHash] -> [PubKeyHash]
+insert pkh [] = [pkh]
+insert pkh (x : l') =
+  if pkh == x then x : l' else x : insert pkh l'
 
-{-# INLINEABLE ratioCompare #-}
-ratioCompare :: Integer -> Integer -> Rational -> Bool
-ratioCompare a b r = a * numerator r <= b * denominator r
+{-# INLINEABLE expired #-}
+expired :: Integer -> ScriptContext -> Bool
+expired d ctx = before (POSIXTime d) (validRange ctx)
 
-{-# INLINEABLE checkPaymentRatio #-}
-checkPaymentRatio
-  :: PubKeyHash
-  -> Integer
-  -> AssetClass
-  -> Rational
-  -> ScriptContext
-  -> Bool
-checkPaymentRatio pkh amt ac r ctx =
-  ratioCompare amt (assetClassValueOf (getPayment pkh ctx) ac) r
-    && geq (getPayment pkh ctx) minValue
+{-# INLINEABLE notTooLate #-}
+notTooLate :: Params -> Integer -> ScriptContext -> Bool
+notTooLate par d ctx =
+  before (POSIXTime (d - maxWait par)) (validRange ctx)
 
 {-# INLINEABLE agdaValidator #-}
 agdaValidator
   :: Params -> Datum -> Redeemer -> ScriptContext -> Bool
-agdaValidator par (tok, lab) red ctx =
+agdaValidator param (tok, lab) red ctx =
   checkTokenIn tok ctx
-    && case red of
-      Update v r ->
-        checkSigned (owner lab) ctx
-          && checkRational r
-          && geq v minValue
-          && newValue ctx
-          == v
-          && newDatum ctx
-          == (tok, Label r (owner lab))
-          && continuing ctx
-          && checkTokenOut tok ctx
-      Exchange amt pkh ->
+    && case (lab, red) of
+      (Holding, Propose v pkh d) ->
         newValue ctx
-          + assetClassValue (sellCurr par) amt
           == oldValue ctx
-          && newDatum ctx
-          == (tok, lab)
-          && checkPaymentRatio (owner lab) amt (buyCurr par) (ratio lab) ctx
+          && geq (oldValue ctx) (v + minValue)
+          && geq v minValue
+          && notTooLate param d ctx
           && continuing ctx
           && checkTokenOut tok ctx
-      Stop ->
-        not (continuing ctx)
+          && case newDatum ctx of
+            (tok', Holding) -> False
+            (tok', Collecting v' pkh' d' sigs') ->
+              v
+                == v'
+                && pkh
+                == pkh'
+                && d
+                == d'
+                && sigs'
+                == []
+                && tok
+                == tok'
+      (Collecting v pkh d sigs, Add sig) ->
+        newValue ctx
+          == oldValue ctx
+          && checkSigned sig ctx
+          && elem sig (authSigs param)
+          && continuing ctx
+          && checkTokenOut tok ctx
+          && case newDatum ctx of
+            (tok', Holding) -> False
+            ( tok'
+              , Collecting v' pkh' d' sigs'
+              ) ->
+                v
+                  == v'
+                  && pkh
+                  == pkh'
+                  && d
+                  == d'
+                  && sigs'
+                  == insert
+                    sig
+                    sigs
+                  && tok
+                  == tok'
+      (Collecting v pkh d sigs, Pay) ->
+        length sigs
+          >= minSigs param
+          && continuing ctx
+          && checkTokenOut tok ctx
+          && case newDatum ctx of
+            (tok', Holding) ->
+              checkPayment pkh v ctx
+                && newValue ctx
+                + v
+                == oldValue ctx
+                && tok
+                == tok'
+            (tok', Collecting v' pkh' d' sigs') -> False
+      (Collecting v pkh d sigs, Cancel) ->
+        newValue ctx
+          == oldValue ctx
+          && continuing ctx
+          && checkTokenOut tok ctx
+          && case newDatum ctx of
+            (tok', Holding) ->
+              expired d ctx
+                && tok
+                == tok'
+            ( tok'
+              , Collecting v' pkh' d' sigs'
+              ) -> False
+      (Holding, Stop) ->
+        lovelaces x2MinValue
+          > lovelaces (oldValue ctx)
+          && not (continuing ctx)
           && checkTokenBurned tok ctx
-          && checkSigned (owner lab) ctx
+      _ -> False
 
 {-# INLINEABLE checkDatum #-}
 checkDatum :: Address -> TokenName -> ScriptContext -> Bool
 checkDatum addr tn ctx =
   case newDatumAddr addr ctx of
-    (tok, l) -> ownAssetClass tn ctx == tok && checkRational (ratio l)
+    (tok, Holding) -> ownAssetClass tn ctx == tok
+    (tok, Collecting _ _ _ _) -> False
 
 {-# INLINEABLE checkValue #-}
 checkValue :: Address -> TokenName -> ScriptContext -> Bool
 checkValue addr tn ctx =
-  checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
+  geq (newValueAddr addr ctx) x2MinValue
+    && checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
+
+{-# INLINEABLE noDups #-}
+noDups :: [PubKeyHash] -> Bool
+noDups [] = True
+noDups (x : xs) = not (elem x xs) && noDups xs
+
+{-# INLINEABLE checkParams #-}
+checkParams :: Params -> Bool
+checkParams par =
+  noDups (authSigs par)
+    && length (authSigs par)
+    >= minSigs par
+    && maxWait par
+    > 0
 
 {-# INLINEABLE agdaPolicy #-}
 agdaPolicy
@@ -204,6 +275,7 @@ agdaPolicy par addr oref tn _ ctx =
         && consumes oref ctx
         && checkDatum addr tn ctx
         && checkValue addr tn ctx
+        && checkParams par
     else if amt == (-1) then not (continuingAddr addr ctx) else False
   where
     amt :: Integer
@@ -308,11 +380,8 @@ getPayment pkh ctx = case filter
   (\i -> (txOutAddress i == (pubKeyHashAddress pkh)))
   (txInfoOutputs (scriptContextTxInfo ctx)) of
   [o] -> txOutValue o
-  _ -> error ()
-
-{-# INLINEABLE validRange #-}
-validRange :: ScriptContext -> Interval POSIXTime
-validRange ctx = txInfoValidRange (scriptContextTxInfo ctx)
+  (o : os) -> txOutValue o
+  _ -> emptyValue
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- Generic helper functions that get compiled as part of the Minting Policy Script
@@ -368,14 +437,14 @@ newValueAddr addr ctx = txOutValue (outputAtAddr addr ctx)
 ------------------------------------------------------------------------------------------------------------------------------
 
 -- Declaring the type of the validator
-data DEx
-instance Scripts.ValidatorTypes DEx where
-  type RedeemerType DEx = Redeemer
-  type DatumType DEx = Datum
+data ContractName
+instance Scripts.ValidatorTypes ContractName where
+  type RedeemerType ContractName = Redeemer
+  type DatumType ContractName = Datum
 
-smTypedValidator :: Params -> V3.TypedValidator DEx
+smTypedValidator :: Params -> V3.TypedValidator ContractName
 smTypedValidator =
-  V3.mkTypedValidatorParam @DEx
+  V3.mkTypedValidatorParam @ContractName
     $$(PlutusTx.compile [||agdaValidator||])
     $$(PlutusTx.compile [||wrap||])
   where

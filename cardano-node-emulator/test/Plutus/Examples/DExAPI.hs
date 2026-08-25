@@ -125,9 +125,6 @@ burnTokenValue' ac = C.valueFromList [(toAssetId ac, C.Quantity (-1))]
 someTokenValue :: AssetClass -> Integer -> C.Value
 someTokenValue ac i = C.valueFromList [(toAssetId ac, C.Quantity i)]
 
-lovelaces :: Value -> Integer
-lovelaces v = assetClassValueOf v (AssetClass (adaSymbol, adaToken))
-
 getPayAmt :: Integer -> PlutusLedgerApi.V3.Rational -> Integer
 getPayAmt amt r =
   if mod (amt * numerator r) (denominator r) == 0

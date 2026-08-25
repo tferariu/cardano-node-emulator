@@ -121,9 +121,6 @@ burnTokenValue p oref tn an = C.valueFromList [(C.AssetId (getPid p oref tn) an,
 burnTokenValue' :: AssetClass -> C.Value
 burnTokenValue' ac = C.valueFromList [(toAssetId ac, C.Quantity (-1))]
 
-lovelaces :: Value -> Integer
-lovelaces v = assetClassValueOf v (AssetClass (adaSymbol, adaToken))
-
 newtype TxSuccess = TxSuccess TxId
   deriving (Eq, Show)
 

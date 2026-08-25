@@ -207,7 +207,7 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "45ae8b2f2474cb9fde4d2e7b3f6511adbbe051a2d9dcfb80fa75569e"
+curr = "c851e0de0bbc10426e344c5988ab1258c553dd3642d76eaaa5593c0c"
 
 -- Two Thread Tokens are necessary if you open two different instances of the contract
 tn' :: TokenName
@@ -428,7 +428,7 @@ instance ContractModel DExState where
       wait 1
 
   precondition s a = case a of
-    Unite w -> True -- ((getCount w count') >= 3)
+    Unite w -> True -- && ((getCount w count') >= 1)
     Update w v r -> currentPhase == Running && (w == owner') && ((getCount w count') < 3)
     Exchange amt w ->
       currentPhase == Running
@@ -456,11 +456,11 @@ instance ContractModel DExState where
         , Update
             <$> genWallet
             <*> genValue
-            <*> (fromJust <$> (ratio <$> chooseInteger (1, 10) <*> chooseInteger (1, 10)))
+            <*> (fromJust <$> (ratio <$> chooseInteger (1, 100) <*> chooseInteger (1, 100)))
         )
       , (10, Exchange <$> chooseInteger (500, amt) <*> genWallet) -- keep checking with 1
       , (1, Stop <$> genWallet)
-      , (5, Unite <$> genWallet)
+      , (1, Unite <$> genWallet)
       ,
         ( 2
         , Start
@@ -579,6 +579,7 @@ liquidity = do
   anyActions_
   phase <- viewContractState phase
   owner <- viewContractState owner
+  count <- viewContractState count
   case owner of
     Nothing -> assertModel "Should have no locked value" $ symIsZero . lockedValue
     Just wallet -> do

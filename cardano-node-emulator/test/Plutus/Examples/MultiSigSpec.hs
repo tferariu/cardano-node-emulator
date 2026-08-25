@@ -193,19 +193,19 @@ tn :: TokenName
 tn = "ThreadToken"
 
 curr :: CurrencySymbol
-curr = "fade0b5e4a2d377395acc104fd6fd59ef5fa397a0c786ec8a98dee19"
+curr = "0f59fd3bb983d741dc266fb8e8bab7ce6346ba974496a33474d5033f"
 
 tn' :: TokenName
 tn' = "ThreadToken"
 
 curr' :: CurrencySymbol
-curr' = "60e0473cfd214b4af56dc2b0f2e9108224bb92be1d8a59bcdf9a8646"
+curr' = "cbed4716ddb1da782415180c20fa7fe026b49035e2358234f92c06fd"
 
 tin :: API.TxIn
 tin = API.TxIn "b0de2873afe95a6530bf1ae88096cf43e17bb2ee669f9ba600838949ac1e08ec" (API.TxIx 5)
 
 tin' :: API.TxIn
-tin' = API.TxIn "c1e3734ceec1b6f7c1959def2a12a8cf7d1aaf7ee15f42e88df09513f6a6ff28" (API.TxIx 1)
+tin' = API.TxIn "4983169fe640756df634a887062ce244f86cb5be5f5c2f973fe6a59ff3e0a328" (API.TxIx 1)
 
 -- Debug Switches
 ok :: Bool
@@ -374,7 +374,7 @@ instance ContractModel MultiSigState where
     Pay w -> currentPhase == Collecting && ((length actualSigs) >= (fromIntegral min)) -- && w == receiver
     Cancel w -> currentPhase == Collecting && ((d + 2000) < timeInt)
     Start w v -> currentPhase == Stopped && (v `geq` x2MinValue)
-    Stop w -> currentPhase == Holding && (x2MinValue `gt` currentValue)
+    Stop w -> currentPhase == Holding && (lovelaces x2MinValue > lovelaces currentValue)
     where
       currentPhase = s ^. contractState . phase
       currentValue = (s ^. contractState . actualValue) -- liquid value
@@ -612,7 +612,7 @@ liquidity = do
     Stopped -> assertModel "Should have no locked value" $ symIsZero . lockedValue
     Holding -> do
       currentValue <- viewContractState actualValue
-      case (x2MinValue `gt` currentValue) of
+      case (lovelaces x2MinValue > lovelaces currentValue) of
         True -> action $ Stop w1
         False -> do
           action $ Propose w1 (currentValue PlutusTx.- minValue) w1 0
@@ -623,7 +623,7 @@ liquidity = do
       sequence_ [action $ Add w | w <- authSigs]
       action $ Pay w1
       currentValue <- viewContractState actualValue
-      case (x2MinValue `gt` currentValue) of
+      case (lovelaces x2MinValue > lovelaces currentValue) of
         True -> action $ Stop w2
         False -> do
           action $ Propose w2 (currentValue PlutusTx.- minValue) w2 0
@@ -635,9 +635,9 @@ liquidity = do
 prop_Liquidity :: Property
 prop_Liquidity = forAllDL liquidity prop_MultiSig
 
-noDups :: [Wallet] -> Bool
-noDups [] = True
-noDups (x : xs) = not (elem x xs) && noDups xs
+noDups' :: [Wallet] -> Bool
+noDups' [] = True
+noDups' (x : xs) = not (elem x xs) && noDups' xs
 
 validity :: QCCM.ModelState MultiSigState -> Bool
 validity s = case currentPhase of
@@ -646,7 +646,7 @@ validity s = case currentPhase of
   Collecting ->
     geq currentValue (currentPayment PlutusTx.+ minValue)
       && geq currentPayment minValue
-      && noDups currentSigs
+      && noDups' currentSigs
   where
     currentPhase = s ^. contractState . phase
     currentValue = s ^. contractState . actualValue

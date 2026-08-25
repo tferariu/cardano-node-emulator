@@ -16,35 +16,7 @@
 {-# LANGUAGE ViewPatterns #-}
 {-# LANGUAGE NoImplicitPrelude #-}
 
--- {-# OPTIONS_GHC -fplugin-opt PlutusTx.Plugin:conservative-optimisation #-}
-
--- | A Multi-Signature Wallet contract in Plutus
-module Plutus.Examples.MultiSig (
-  MultiSig,
-  Label (..),
-  Datum (..),
-  Params (..),
-  smTypedValidator,
-  mkAddress,
-  insert,
-
-  -- * Exposed for test endpoints
-  Redeemer (..),
-  agdaValidator,
-  agdaPolicy,
-  policy,
-  versionedPolicy,
-  curSymbol,
-  mintingHash,
-  getPid,
-  minValue,
-  x2MinValue,
-  writeUplc,
-  emptyValue,
-
-  -- * Coverage
-  covIdx,
-) where
+module Plutus.Examples.MultiSig where
 
 import Cardano.Api qualified as C
 import Cardano.Api.Shelley qualified as C
@@ -93,17 +65,15 @@ import Plutus.Script.Utils.Value
 import PlutusCore qualified as PLC
 import PlutusCore.Builtin qualified as PLC
 import PlutusCore.Pretty
-import PlutusCore.Pretty qualified as PLC
 import PlutusCore.Test
 import PlutusCore.Version (plcVersion110)
 import PlutusIR.Core.Instance.Pretty.Readable
 import PlutusIR.Core.Type
-import PlutusIR.Core.Type (progTerm)
 import PlutusLedgerApi.V1.Address
 import PlutusLedgerApi.V1.Interval hiding (singleton)
 import PlutusLedgerApi.V1.Value qualified as V
 import PlutusLedgerApi.V2.Tx hiding (TxId)
-import PlutusLedgerApi.V3 hiding (Datum, Redeemer, TxId)
+import PlutusLedgerApi.V3 hiding (Datum, Redeemer, TxId, ratio)
 import PlutusLedgerApi.V3 qualified as V3
 import PlutusLedgerApi.V3.Contexts hiding (TxId)
 import PlutusTx (ToData)
@@ -118,7 +88,8 @@ import PlutusTx.Code (
   sizePlc,
  )
 import PlutusTx.Coverage (CoverageIndex)
-import PlutusTx.Prelude
+import PlutusTx.Prelude hiding (ratio)
+import PlutusTx.Ratio hiding (ratio)
 import PlutusTx.Test
 import Prettyprinter qualified
 import Test.Tasty.Extras
@@ -127,13 +98,14 @@ import UntypedPlutusCore qualified as UPLC
 import UntypedPlutusCore.Evaluation.Machine.Cek qualified as UPLC
 import Prelude (IO, Show (..), String, writeFile)
 
--- Custom data types for the validator
-
 type Natural = Integer
 
 data Label
   = Holding
   | Collecting Value PubKeyHash Integer [PubKeyHash]
+
+PlutusTx.unstableMakeIsData ''Label
+PlutusTx.makeLift ''Label
 
 type Datum = (AssetClass, Label)
 
@@ -144,27 +116,166 @@ data Redeemer
   | Cancel
   | Stop
 
+PlutusTx.unstableMakeIsData ''Redeemer
+PlutusTx.makeLift ''Redeemer
+
 data Params = Params
   { authSigs :: [PubKeyHash]
   , minSigs :: Natural
   , maxWait :: Integer
   }
 
--- Necessary for template Haskell and compiling the validator
-PlutusTx.unstableMakeIsData ''Label
-PlutusTx.makeLift ''Label
-PlutusTx.unstableMakeIsData ''Redeemer
-PlutusTx.makeLift ''Redeemer
 PlutusTx.unstableMakeIsData ''Params
 PlutusTx.makeLift ''Params
-
--- Helper functions for processing the list of signatories.
 
 {-# INLINEABLE insert #-}
 insert :: PubKeyHash -> [PubKeyHash] -> [PubKeyHash]
 insert pkh [] = [pkh]
 insert pkh (x : l') =
   if pkh == x then x : l' else x : insert pkh l'
+
+{-# INLINEABLE expired #-}
+expired :: Integer -> ScriptContext -> Bool
+expired d ctx = before (POSIXTime d) (validRange ctx)
+
+{-# INLINEABLE notTooLate #-}
+notTooLate :: Params -> Integer -> ScriptContext -> Bool
+notTooLate par d ctx =
+  before (POSIXTime (d - maxWait par)) (validRange ctx)
+
+{-# INLINEABLE agdaValidator #-}
+agdaValidator
+  :: Params -> Datum -> Redeemer -> ScriptContext -> Bool
+agdaValidator param (tok, lab) red ctx =
+  checkTokenIn tok ctx
+    && case (lab, red) of
+      (Holding, Propose v pkh d) ->
+        newValue ctx
+          == oldValue ctx
+          && geq (oldValue ctx) (v + minValue)
+          && geq v minValue
+          && notTooLate param d ctx
+          && continuing ctx
+          && checkTokenOut tok ctx
+          && case newDatum ctx of
+            (tok', Holding) -> False
+            (tok', Collecting v' pkh' d' sigs') ->
+              v
+                == v'
+                && pkh
+                == pkh'
+                && d
+                == d'
+                && sigs'
+                == []
+                && tok
+                == tok'
+      (Collecting v pkh d sigs, Add sig) ->
+        newValue ctx
+          == oldValue ctx
+          && checkSigned sig ctx
+          && elem sig (authSigs param)
+          && continuing ctx
+          && checkTokenOut tok ctx
+          && case newDatum ctx of
+            (tok', Holding) -> False
+            ( tok'
+              , Collecting v' pkh' d' sigs'
+              ) ->
+                v
+                  == v'
+                  && pkh
+                  == pkh'
+                  && d
+                  == d'
+                  && sigs'
+                  == insert
+                    sig
+                    sigs
+                  && tok
+                  == tok'
+      (Collecting v pkh d sigs, Pay) ->
+        length sigs
+          >= minSigs param
+          && continuing ctx
+          && checkTokenOut tok ctx
+          && case newDatum ctx of
+            (tok', Holding) ->
+              checkPayment pkh v ctx
+                && newValue ctx
+                + v
+                == oldValue ctx
+                && tok
+                == tok'
+            (tok', Collecting v' pkh' d' sigs') -> False
+      (Collecting v pkh d sigs, Cancel) ->
+        newValue ctx
+          == oldValue ctx
+          && continuing ctx
+          && checkTokenOut tok ctx
+          && case newDatum ctx of
+            (tok', Holding) ->
+              expired d ctx
+                && tok
+                == tok'
+            ( tok'
+              , Collecting v' pkh' d' sigs'
+              ) -> False
+      (Holding, Stop) ->
+        lovelaces x2MinValue
+          > lovelaces (oldValue ctx)
+          && not (continuing ctx)
+          && checkTokenBurned tok ctx
+      _ -> False
+
+{-# INLINEABLE checkDatum #-}
+checkDatum :: Address -> TokenName -> ScriptContext -> Bool
+checkDatum addr tn ctx =
+  case newDatumAddr addr ctx of
+    (tok, Holding) -> ownAssetClass tn ctx == tok
+    (tok, Collecting _ _ _ _) -> False
+
+{-# INLINEABLE checkValue #-}
+checkValue :: Address -> TokenName -> ScriptContext -> Bool
+checkValue addr tn ctx =
+  geq (newValueAddr addr ctx) x2MinValue
+    && checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
+
+{-# INLINEABLE noDups #-}
+noDups :: [PubKeyHash] -> Bool
+noDups [] = True
+noDups (x : xs) = not (elem x xs) && noDups xs
+
+{-# INLINEABLE checkParams #-}
+checkParams :: Params -> Bool
+checkParams par =
+  noDups (authSigs par)
+    && length (authSigs par)
+    >= minSigs par
+    && maxWait par
+    > 0
+
+{-# INLINEABLE agdaPolicy #-}
+agdaPolicy
+  :: Params
+  -> Address
+  -> TxOutRef
+  -> TokenName
+  -> ()
+  -> ScriptContext
+  -> Bool
+agdaPolicy par addr oref tn _ ctx =
+  if amt == 1
+    then
+      continuingAddr addr ctx
+        && consumes oref ctx
+        && checkDatum addr tn ctx
+        && checkValue addr tn ctx
+        && checkParams par
+    else if amt == (-1) then not (continuingAddr addr ctx) else False
+  where
+    amt :: Integer
+    amt = getMintedAmount ctx
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- Generic helper functions that get compiled as part of the validator
@@ -252,25 +363,6 @@ checkTokenBurned ac ctx = case flattenValue (txInfoMint (scriptContextTxInfo ctx
     | otherwise -> False
   _ -> False
 
-{-# INLINEABLE validRange #-}
-validRange :: ScriptContext -> Interval POSIXTime
-validRange ctx = txInfoValidRange (scriptContextTxInfo ctx)
-
-------------------------------------------------------------------------------------------------------------------------------
--- Contract specific helper functions that get compiled as part of the validator
-------------------------------------------------------------------------------------------------------------------------------
-
-{-# INLINEABLE expired #-}
-expired :: Integer -> ScriptContext -> Bool
-expired d ctx = before ((POSIXTime{getPOSIXTime = d})) (validRange ctx)
-
-{-# INLINEABLE notTooLate #-}
-notTooLate :: Params -> Integer -> ScriptContext -> Bool
-notTooLate par d ctx =
-  before
-    ((POSIXTime{getPOSIXTime = (d - maxWait par)}))
-    (validRange ctx)
-
 {-# INLINEABLE checkPayment #-}
 checkPayment :: PubKeyHash -> Value -> ScriptContext -> Bool
 checkPayment pkh v ctx = case filter
@@ -278,117 +370,17 @@ checkPayment pkh v ctx = case filter
   (txInfoOutputs (scriptContextTxInfo ctx)) of
   os -> any (\o -> txOutValue o == v) os
 
-------------------------------------------------------------------------------------------------------------------------------
--- The Validator
-------------------------------------------------------------------------------------------------------------------------------
+{-# INLINEABLE getPayment #-}
+getPayment :: PubKeyHash -> ScriptContext -> Value
+getPayment pkh ctx = case filter
+  (\i -> (txOutAddress i == (pubKeyHashAddress pkh)))
+  (txInfoOutputs (scriptContextTxInfo ctx)) of
+  [o] -> txOutValue o
+  _ -> error ()
 
--- Declaring the type of the validator
-data MultiSig
-instance Scripts.ValidatorTypes MultiSig where
-  type RedeemerType MultiSig = Redeemer
-  type DatumType MultiSig = Datum
-
-{-# INLINEABLE agdaValidator #-}
-agdaValidator :: Params -> Datum -> Redeemer -> ScriptContext -> Bool
-agdaValidator param (tok, lab) red ctx =
-  checkTokenIn tok ctx
-    && case (lab, red) of
-      (Holding, Propose v pkh d) ->
-        newValue ctx
-          == oldValue ctx
-          && geq (oldValue ctx) (v + minValue)
-          && geq v minValue
-          && notTooLate param d ctx
-          && continuing ctx
-          && checkTokenOut tok ctx
-          && case newDatum ctx of
-            (tok', Holding) -> False
-            (tok', Collecting v' pkh' d' sigs') ->
-              v
-                == v'
-                && pkh
-                == pkh'
-                && d
-                == d'
-                && sigs'
-                == []
-                && tok
-                == tok'
-      (Collecting v pkh d sigs, Add sig) ->
-        newValue ctx
-          == oldValue ctx
-          && checkSigned sig ctx
-          && elem sig (authSigs param)
-          && continuing ctx
-          && checkTokenOut tok ctx
-          && case newDatum ctx of
-            (tok', Holding) -> False
-            ( tok'
-              , Collecting v' pkh' d' sigs'
-              ) ->
-                v
-                  == v'
-                  && pkh
-                  == pkh'
-                  && d
-                  == d'
-                  && sigs'
-                  == insert
-                    sig
-                    sigs
-                  && tok
-                  == tok'
-      (Collecting v pkh d sigs, Pay) ->
-        length sigs
-          >= minSigs param
-          && continuing ctx
-          && checkTokenOut tok ctx
-          && case newDatum ctx of
-            (tok', Holding) ->
-              checkPayment pkh v ctx
-                && newValue ctx
-                + v
-                == oldValue ctx
-                && tok
-                == tok'
-            (tok', Collecting v' pkh' d' sigs') -> False
-      (Collecting v pkh d sigs, Cancel) ->
-        newValue ctx
-          == oldValue ctx
-          && continuing ctx
-          && checkTokenOut tok ctx
-          && case newDatum ctx of
-            (tok', Holding) ->
-              expired d ctx
-                && tok
-                == tok'
-            ( tok'
-              , Collecting v' pkh' d' sigs'
-              ) -> False
-      (Holding, Stop) ->
-        lovelaces x2MinValue
-          > lovelaces (oldValue ctx)
-          && not (continuing ctx)
-          && checkTokenBurned tok ctx
-      _ -> False
-
-------------------------------------------------------------------------------------------------------------------------------
--- Compiling the Validator
-------------------------------------------------------------------------------------------------------------------------------
-
-smTypedValidator :: Params -> V3.TypedValidator MultiSig
-smTypedValidator =
-  V3.mkTypedValidatorParam @MultiSig
-    $$(PlutusTx.compile [||agdaValidator||])
-    $$(PlutusTx.compile [||wrap||])
-  where
-    wrap = Scripts.mkUntypedValidator
-
-mkAddress :: Params -> Ledger.CardanoAddress
-mkAddress = validatorCardanoAddress testnet . smTypedValidator
-
-mkA2 :: Params -> Address
-mkA2 = V3.validatorAddress . smTypedValidator
+{-# INLINEABLE validRange #-}
+validRange :: ScriptContext -> Interval POSIXTime
+validRange ctx = txInfoValidRange (scriptContextTxInfo ctx)
 
 ------------------------------------------------------------------------------------------------------------------------------
 -- Generic helper functions that get compiled as part of the Minting Policy Script
@@ -440,58 +432,31 @@ newValueAddr :: Address -> ScriptContext -> Value
 newValueAddr addr ctx = txOutValue (outputAtAddr addr ctx)
 
 ------------------------------------------------------------------------------------------------------------------------------
--- Thread Token specific functions that get compiled as part of the Minting Policy Script
+-- Compiling the validator
 ------------------------------------------------------------------------------------------------------------------------------
 
-{-# INLINEABLE checkDatum #-}
-checkDatum :: Address -> TokenName -> ScriptContext -> Bool
-checkDatum addr tn ctx =
-  case newDatumAddr addr ctx of
-    (tok, Holding) -> ownAssetClass tn ctx == tok
-    (tok, Collecting _ _ _ _) -> False
+-- Declaring the type of the validator
+data MultiSig
+instance Scripts.ValidatorTypes MultiSig where
+  type RedeemerType MultiSig = Redeemer
+  type DatumType MultiSig = Datum
 
-{-# INLINEABLE checkValue #-}
-checkValue :: Address -> TokenName -> ScriptContext -> Bool
-checkValue addr tn ctx =
-  lovelaces x2MinValue
-    < lovelaces (newValueAddr addr ctx)
-    && checkTokenOutAddr addr (ownAssetClass tn ctx) ctx
-
-{-# INLINEABLE noDups #-}
-noDups :: [PubKeyHash] -> Bool
-noDups [] = True
-noDups (x : xs) = not (elem x xs) && noDups xs
-
-{-# INLINEABLE checkParams #-}
-checkParams :: Params -> Bool
-checkParams (Params authSigs nr maxWait) =
-  noDups authSigs && length authSigs >= nr && maxWait > 0
-
--- Thread Token
-{-# INLINEABLE agdaPolicy #-}
-agdaPolicy
-  :: Params
-  -> Address
-  -> TxOutRef
-  -> TokenName
-  -> ()
-  -> ScriptContext
-  -> Bool
-agdaPolicy par addr oref tn _ ctx =
-  if amt == 1
-    then
-      continuingAddr addr ctx
-        && consumes oref ctx
-        && checkDatum addr tn ctx
-        && checkValue addr tn ctx
-        && checkParams par
-    else if amt == (-1) then not (continuingAddr addr ctx) else False
+smTypedValidator :: Params -> V3.TypedValidator MultiSig
+smTypedValidator =
+  V3.mkTypedValidatorParam @MultiSig
+    $$(PlutusTx.compile [||agdaValidator||])
+    $$(PlutusTx.compile [||wrap||])
   where
-    amt :: Integer
-    amt = getMintedAmount ctx
+    wrap = Scripts.mkUntypedValidator
+
+mkAddress :: Params -> Ledger.CardanoAddress
+mkAddress = validatorCardanoAddress testnet . smTypedValidator
+
+mkA2 :: Params -> Address
+mkA2 = V3.validatorAddress . smTypedValidator
 
 ------------------------------------------------------------------------------------------------------------------------------
--- The Minting Policy Script
+-- Compiling the Minting Policy Script
 ------------------------------------------------------------------------------------------------------------------------------
 
 policy :: Params -> TxOutRef -> TokenName -> V3.MintingPolicy
@@ -504,10 +469,6 @@ policy p oref tn =
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 (mkA2 p)
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 oref
     `PlutusTx.unsafeApplyCode` PlutusTx.liftCode plcVersion110 tn
-
-------------------------------------------------------------------------------------------------------------------------------
--- Compiling the Minting Policy Script
-------------------------------------------------------------------------------------------------------------------------------
 
 versionedPolicy :: Params -> TxOutRef -> TokenName -> Scripts.Versioned V3.MintingPolicy
 versionedPolicy p oref tn = (Ledger.Versioned (policy p oref tn) Ledger.PlutusV3)
@@ -528,29 +489,8 @@ getPid :: Params -> TxOutRef -> TokenName -> Ledger.PolicyId
 getPid p oref tn = Ledger.policyId (versionedPolicy p oref tn)
 
 ------------------------------------------------------------------------------------------------------------------------------
--- Code for testing and exporting the validator to a file
+-- Code for testing
 ------------------------------------------------------------------------------------------------------------------------------
 
 covIdx :: CoverageIndex
 covIdx = getCovIdx $$(PlutusTx.compile [||agdaValidator||])
-
-ccode :: PlutusTx.CompiledCode (Params -> Datum -> Redeemer -> ScriptContext -> Bool)
-ccode = $$(PlutusTx.compile [||agdaValidator||])
-
-test :: SerialisedScript
-test = serialiseCompiledCode ccode
-
-serialisedNP :: C.PlutusScript C.PlutusScriptV3
-serialisedNP = C.PlutusScriptSerialised test
-
-writeCcode :: IO ()
-writeCcode = void $ C.writeFileTextEnvelope "ccodeMultiSig.plutus" Nothing serialisedNP
-
-printPir :: PlutusTx.CompiledCode a -> Doc b
-printPir c = (prettyPirReadable (view progTerm (fromJust (getPirNoAnn c))))
-
-writePir :: IO ()
-writePir = writeFile "pirMultiSig.txt" (show (printPir ccode))
-
-writeUplc :: IO ()
-writeUplc = writeFile "uplcMultiSig.txt" (show (getPlcNoAnn ccode {--}))
